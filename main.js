@@ -10,14 +10,23 @@ let provider = null;
 let signer = null;
 let walletAddress = null;
 let conversations = [];
+let pendingRequests = [];
 let userProfile = {
-    username: ''
+    username: '',
+    theme: 'light',
+    nftProfile: null
 };
 let friendDirectory = [];
+let messageQueue = [];
+let isOnline = navigator.onLine;
+let currentCall = null;
 
 const STORAGE_KEYS = {
     profile: 'xmtpUserProfile',
-    friends: 'xmtpFriendDirectory'
+    friends: 'xmtpFriendDirectory',
+    pendingRequests: 'xmtpPendingRequests',
+    messageQueue: 'xmtpMessageQueue',
+    theme: 'xmtpTheme'
 };
 
 // ============================================
@@ -34,6 +43,10 @@ const conversationsList = document.getElementById('conversationsList');
 const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
+const attachBtn = document.getElementById('attachBtn');
+const fileInput = document.getElementById('fileInput');
+const voiceCallBtn = document.getElementById('voiceCallBtn');
+const videoCallBtn = document.getElementById('videoCallBtn');
 const logsDiv = document.getElementById('logs');
 const clearLogsBtn = document.getElementById('clearLogs');
 const landingView = document.getElementById('landingView');
@@ -177,6 +190,42 @@ function loadFriendDirectory() {
     renderFriendList();
 }
 
+function loadPendingRequests() {
+    pendingRequests = [];
+    if (!window.localStorage) {
+        renderPendingRequests();
+        return;
+    }
+    try {
+        const stored = localStorage.getItem(STORAGE_KEYS.pendingRequests);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+                pendingRequests = parsed.filter(item =>
+                    item &&
+                    typeof item.id === 'string' &&
+                    typeof item.senderInboxId === 'string' &&
+                    typeof item.senderUsername === 'string' &&
+                    typeof item.recipientInboxId === 'string' &&
+                    (item.status === 'pending' || item.status === 'accepted' || item.status === 'declined')
+                );
+            }
+        }
+    } catch (error) {
+        console.warn('Unable to load pending requests', error);
+    }
+    renderPendingRequests();
+}
+
+function savePendingRequests() {
+    if (!window.localStorage) return;
+    try {
+        localStorage.setItem(STORAGE_KEYS.pendingRequests, JSON.stringify(pendingRequests));
+    } catch (error) {
+        console.warn('Unable to persist pending requests', error);
+    }
+}
+
 function saveFriendDirectory() {
     if (!window.localStorage) return;
     try {
@@ -238,6 +287,11 @@ function renderFriendList(filterText = '') {
         }
         friendListDiv.appendChild(item);
     });
+}
+
+function renderPendingRequests() {
+    // Placeholder for rendering pending friend requests UI
+    // This will be implemented when adding the UI elements for pending requests
 }
 
 function handleFriendSelection(friend) {
@@ -382,6 +436,440 @@ clearLogsBtn.addEventListener('click', () => {
     logsDiv.innerHTML = '';
     log('Activity log cleared', 'info');
 });
+
+// ============================================
+// OFFLINE MESSAGE QUEUING
+// ============================================
+function loadMessageQueue() {
+    messageQueue = [];
+    if (!window.localStorage) return;
+    try {
+        const stored = localStorage.getItem(STORAGE_KEYS.messageQueue);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+                messageQueue = parsed.filter(item =>
+                    item &&
+                    typeof item.id === 'string' &&
+                    typeof item.conversationId === 'string' &&
+                    typeof item.content === 'string' &&
+                    typeof item.timestamp === 'number'
+                );
+            }
+        }
+    } catch (error) {
+        console.warn('Unable to load message queue', error);
+    }
+    updateQueueStatus();
+}
+
+function saveMessageQueue() {
+    if (!window.localStorage) return;
+    try {
+        localStorage.setItem(STORAGE_KEYS.messageQueue, JSON.stringify(messageQueue));
+    } catch (error) {
+        console.warn('Unable to persist message queue', error);
+    }
+}
+
+function addToQueue(conversationId, content) {
+    const queueItem = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        conversationId,
+        content,
+        timestamp: Date.now()
+    };
+    messageQueue.push(queueItem);
+    saveMessageQueue();
+    updateQueueStatus();
+    log('📝 Message queued for offline sending', 'info');
+}
+
+async function processQueue() {
+    if (!isOnline || messageQueue.length === 0 || !xmtpClient) return;
+
+    log(`📤 Processing ${messageQueue.length} queued messages...`, 'info');
+
+    const remainingQueue = [];
+
+    for (const item of messageQueue) {
+        try {
+            const conversation = conversations.find(c => c.id === item.conversationId);
+            if (conversation) {
+                await conversation.send(item.content);
+                log('✅ Queued message sent!', 'success');
+            } else {
+                log('⚠️ Conversation not found for queued message', 'warning');
+                remainingQueue.push(item);
+            }
+        } catch (error) {
+            log(`❌ Failed to send queued message: ${error.message}`, 'error');
+            remainingQueue.push(item);
+        }
+    }
+
+    messageQueue = remainingQueue;
+    saveMessageQueue();
+    updateQueueStatus();
+}
+
+function updateQueueStatus() {
+    const queueIndicator = document.getElementById('queueStatus');
+    if (queueIndicator) {
+        if (messageQueue.length > 0) {
+            queueIndicator.textContent = `📝 ${messageQueue.length} queued`;
+            queueIndicator.style.display = 'inline-block';
+        } else {
+            queueIndicator.style.display = 'none';
+        }
+    }
+}
+
+// ============================================
+// FILE SHARING & MEDIA SUPPORT
+// ============================================
+async function handleFileUpload(file) {
+    if (!file) return;
+
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+        alert('File size must be less than 10MB');
+        return;
+    }
+
+    try {
+        log(`📎 Preparing to send file: ${file.name}`, 'info');
+
+        // Convert file to base64 for XMTP attachment
+        const base64Data = await fileToBase64(file);
+
+        // Create attachment content type
+        const attachment = {
+            filename: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            data: base64Data
+        };
+
+        // Send as JSON-encoded attachment
+        const content = JSON.stringify({
+            type: 'attachment',
+            attachment: attachment
+        });
+
+        if (currentConversation) {
+            await currentConversation.send(content);
+            log('✅ File sent successfully!', 'success');
+        } else {
+            alert('Select a conversation first');
+        }
+
+    } catch (error) {
+        log(`❌ File upload failed: ${error.message}`, 'error');
+        alert('Failed to send file: ' + error.message);
+    }
+}
+
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = error => reject(error);
+    });
+}
+
+function displayAttachment(message) {
+    try {
+        const content = JSON.parse(message.content);
+        if (content.type === 'attachment' && content.attachment) {
+            const attachment = content.attachment;
+            const isSent = message.senderInboxId === xmtpClient.inboxId;
+
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${isSent ? 'sent' : 'received'}`;
+
+            const date = new Date(Number(message.sentAtNs) / 1000000);
+
+            // Create download link
+            const downloadUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
+
+            messageEl.innerHTML = `
+                <div class="message-header">
+                    <span>${isSent ? '📤 You' : '📥 ' + message.senderInboxId.slice(0, 8)}</span>
+                    <span>${date.toLocaleTimeString()}</span>
+                </div>
+                <div class="message-content">
+                    <div class="attachment">
+                        <div class="attachment-info">
+                            📎 <strong>${escapeHtml(attachment.filename)}</strong>
+                            <br><small>${formatFileSize(attachment.data.length * 0.75)}</small>
+                        </div>
+                        <a href="${downloadUrl}" download="${attachment.filename}" class="download-btn">Download</a>
+                    </div>
+                </div>
+            `;
+
+            messagesDiv.appendChild(messageEl);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return true;
+        }
+    } catch (error) {
+        // Not an attachment, handle as regular message
+        return false;
+    }
+    return false;
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// ============================================
+// THEMES & NFT PROFILES
+// ============================================
+function loadTheme() {
+    if (!window.localStorage) return;
+    try {
+        const stored = localStorage.getItem(STORAGE_KEYS.theme);
+        if (stored) {
+            userProfile.theme = stored;
+        }
+    } catch (error) {
+        console.warn('Unable to load theme', error);
+    }
+    applyTheme();
+}
+
+function saveTheme(theme) {
+    userProfile.theme = theme;
+    if (!window.localStorage) return;
+    try {
+        localStorage.setItem(STORAGE_KEYS.theme, theme);
+    } catch (error) {
+        console.warn('Unable to persist theme', error);
+    }
+    applyTheme();
+}
+
+function applyTheme() {
+    const theme = userProfile.theme || 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    log(`🎨 Theme changed to ${theme}`, 'info');
+}
+
+async function loadNFTProfile() {
+    if (!walletAddress || !window.ethereum) return;
+
+    try {
+        // Simple NFT detection - check for common NFT contracts
+        const nftContracts = [
+            '0x06012c8cf97BEaD5deAe237070F9587f8E7A266d', // CryptoKitties
+            '0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D', // BAYC
+            // Add more popular NFT contracts as needed
+        ];
+
+        for (const contractAddress of nftContracts) {
+            try {
+                // This is a simplified check - in production you'd use proper NFT APIs
+                const balance = await provider.getBalance(walletAddress);
+                if (balance > 0) {
+                    // Mock NFT profile - in real implementation, query NFT ownership
+                    userProfile.nftProfile = {
+                        contract: contractAddress,
+                        tokenId: '1', // Mock
+                        image: `https://via.placeholder.com/100?text=NFT` // Mock
+                    };
+                    break;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+
+        updateNFTProfileUI();
+    } catch (error) {
+        console.warn('Unable to load NFT profile', error);
+    }
+}
+
+function updateNFTProfileUI() {
+    const profileImg = document.getElementById('profileImage');
+    if (profileImg && userProfile.nftProfile) {
+        profileImg.src = userProfile.nftProfile.image;
+        profileImg.style.display = 'block';
+    }
+}
+
+// ============================================
+// VOICE & VIDEO CALLS
+// ============================================
+let localStream = null;
+let peerConnection = null;
+
+async function startVoiceCall() {
+    if (!currentConversation) {
+        alert('Select a conversation first');
+        return;
+    }
+
+    try {
+        log('📞 Starting voice call...', 'info');
+
+        // Get user media
+        localStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false
+        });
+
+        // Send call invitation via XMTP
+        const callData = {
+            type: 'call_invite',
+            callType: 'voice',
+            timestamp: Date.now()
+        };
+
+        await currentConversation.send(JSON.stringify(callData));
+
+        // Initialize WebRTC
+        await initializePeerConnection();
+
+        log('✅ Voice call started!', 'success');
+        updateCallUI(true, 'voice');
+
+    } catch (error) {
+        log(`❌ Voice call failed: ${error.message}`, 'error');
+        alert('Failed to start voice call: ' + error.message);
+    }
+}
+
+async function startVideoCall() {
+    if (!currentConversation) {
+        alert('Select a conversation first');
+        return;
+    }
+
+    try {
+        log('📹 Starting video call...', 'info');
+
+        // Get user media
+        localStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: true
+        });
+
+        // Send call invitation
+        const callData = {
+            type: 'call_invite',
+            callType: 'video',
+            timestamp: Date.now()
+        };
+
+        await currentConversation.send(JSON.stringify(callData));
+
+        // Initialize WebRTC
+        await initializePeerConnection();
+
+        log('✅ Video call started!', 'success');
+        updateCallUI(true, 'video');
+
+    } catch (error) {
+        log(`❌ Video call failed: ${error.message}`, 'error');
+        alert('Failed to start video call: ' + error.message);
+    }
+}
+
+async function initializePeerConnection() {
+    const configuration = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' }
+        ]
+    };
+
+    peerConnection = new RTCPeerConnection(configuration);
+
+    // Add local stream tracks
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+    });
+
+    // Handle remote stream
+    peerConnection.ontrack = (event) => {
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (remoteVideo && event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+        }
+    };
+
+    // Handle ICE candidates
+    peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+            // Send ICE candidate via XMTP
+            const candidateData = {
+                type: 'ice_candidate',
+                candidate: event.candidate
+            };
+            currentConversation.send(JSON.stringify(candidateData));
+        }
+    };
+}
+
+function endCall() {
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+
+    updateCallUI(false);
+    log('📞 Call ended', 'info');
+}
+
+function updateCallUI(inCall, callType = null) {
+    const callControls = document.getElementById('callControls');
+    if (callControls) {
+        if (inCall) {
+            callControls.innerHTML = `
+                <div class="call-active">
+                    <span>${callType === 'video' ? '📹' : '📞'} In ${callType} call</span>
+                    <button id="endCallBtn" class="end-call-btn">End Call</button>
+                </div>
+            `;
+            document.getElementById('endCallBtn').addEventListener('click', endCall);
+        } else {
+            callControls.innerHTML = '';
+        }
+    }
+}
+
+// Handle incoming call messages
+function handleCallMessage(message) {
+    try {
+        const callData = JSON.parse(message.content);
+
+        if (callData.type === 'call_invite') {
+            const accept = confirm(`Incoming ${callData.callType} call. Accept?`);
+            if (accept) {
+                if (callData.callType === 'voice') {
+                    startVoiceCall();
+                } else if (callData.callType === 'video') {
+                    startVideoCall();
+                }
+            }
+        } else if (callData.type === 'ice_candidate' && peerConnection) {
+            peerConnection.addIceCandidate(new RTCIceCandidate(callData.candidate));
+        }
+    } catch (error) {
+        // Not a call message, ignore
+    }
+}
 
 // ============================================
 // CREAR SIGNER COMPATIBLE CON XMTP V3 (MetaMask)
@@ -760,27 +1248,35 @@ function displayMessage(message) {
     if (messagesDiv.querySelector('.empty-state')) {
         messagesDiv.innerHTML = '';
     }
-    
+
     const date = new Date(Number(message.sentAtNs) / 1000000);
-    
+
+    // Check for attachments first
+    if (displayAttachment(message)) {
+        return;
+    }
+
+    // Handle call messages
+    handleCallMessage(message);
+
     // Detectar si es un mensaje del sistema (content no es string)
     if (!message.content || typeof message.content !== 'string') {
         // Mensaje del sistema - renderizar de forma especial
         let systemText = 'System event';
-        
+
         // Intentar extraer información útil del contentType
         if (message.contentType) {
-            const typeStr = typeof message.contentType === 'string' 
-                ? message.contentType 
+            const typeStr = typeof message.contentType === 'string'
+                ? message.contentType
                 : JSON.stringify(message.contentType);
-            
+
             if (typeStr.includes('membership') || typeStr.includes('Membership')) {
                 systemText = 'Group membership updated';
             } else if (typeStr.includes('transcript') || typeStr.includes('Transcript')) {
                 systemText = 'Conversation created';
             }
         }
-        
+
         const systemEl = document.createElement('div');
         systemEl.className = 'message system';
         systemEl.innerHTML = `
@@ -792,9 +1288,9 @@ function displayMessage(message) {
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
         return;
     }
-    
+
     const isSent = message.senderInboxId === xmtpClient.inboxId;
-    
+
     const messageEl = document.createElement('div');
     messageEl.className = `message ${isSent ? 'sent' : 'received'}`;
     messageEl.innerHTML = `
@@ -804,7 +1300,7 @@ function displayMessage(message) {
         </div>
         <div class="message-content">${escapeHtml(message.content)}</div>
     `;
-    
+
     messagesDiv.appendChild(messageEl);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
@@ -812,6 +1308,32 @@ function displayMessage(message) {
 // ============================================
 // ENVIAR MENSAJE
 // ============================================
+async function sendMessage() {
+    if (!currentConversation) {
+        alert('Select a conversation first.');
+        return;
+    }
+
+    const content = messageInput.value.trim();
+    if (!content) return;
+
+    try {
+        sendBtn.disabled = true;
+        log('📤 Sending message...', 'info');
+
+        await currentConversation.send(content);
+
+        log('✅ Message delivered!', 'success');
+        messageInput.value = '';
+
+    } catch (error) {
+        log(`❌ Send error: ${error.message}`, 'error');
+        alert('Send error: ' + error.message);
+    } finally {
+        sendBtn.disabled = false;
+    }
+}
+
 sendBtn.addEventListener('click', sendMessage);
 messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -820,31 +1342,27 @@ messageInput.addEventListener('keypress', (e) => {
     }
 });
 
-async function sendMessage() {
-    if (!currentConversation) {
-        alert('Select a conversation first.');
-        return;
+// ============================================
+// FILE ATTACHMENT HANDLING
+// ============================================
+attachBtn.addEventListener('click', () => {
+    if (fileInput) {
+        fileInput.click();
     }
-    
-    const content = messageInput.value.trim();
-    if (!content) return;
-    
-    try {
-        sendBtn.disabled = true;
-        log('📤 Sending message...', 'info');
-        
-        await currentConversation.send(content);
-        
-        log('✅ Message delivered!', 'success');
-        messageInput.value = '';
-        
-    } catch (error) {
-        log(`❌ Send error: ${error.message}`, 'error');
-        alert('Send error: ' + error.message);
-    } finally {
-        sendBtn.disabled = false;
+});
+
+fileInput.addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (file) {
+        handleFileUpload(file);
     }
-}
+});
+
+// ============================================
+// VOICE & VIDEO CALL HANDLING
+// ============================================
+voiceCallBtn.addEventListener('click', startVoiceCall);
+videoCallBtn.addEventListener('click', startVideoCall);
 
 // ============================================
 // UTILIDADES
@@ -906,6 +1424,7 @@ if (window.ethereum) {
 
 loadUserProfile();
 loadFriendDirectory();
+loadPendingRequests();
 
 log('🚀 XMTP V3 + MetaMask demo ready', 'success');
 log('🦊 Click "Connect with MetaMask" to get started', 'info');

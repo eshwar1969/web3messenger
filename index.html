@@ -155,8 +155,15 @@
                         </div>
                         <div class="composer">
                             <textarea id="messageInput" placeholder="Type your message…" rows="3"></textarea>
-                            <button id="sendBtn" class="primary-action">Send</button>
+                            <div class="composer-controls">
+                                <input type="file" id="fileInput" accept="*" style="display: none;">
+                                <button id="attachBtn" class="ghost-action" title="Attach file">📎</button>
+                                <button id="voiceCallBtn" class="ghost-action" title="Start voice call">📞</button>
+                                <button id="videoCallBtn" class="ghost-action" title="Start video call">📹</button>
+                                <button id="sendBtn" class="primary-action">Send</button>
+                            </div>
                         </div>
+                        <div id="callControls" class="call-controls"></div>
                     </div>
 
                     <div class="chat-panel logs-panel">
