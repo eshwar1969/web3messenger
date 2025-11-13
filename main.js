@@ -1,5 +1,8 @@
 import { Client } from '@xmtp/browser-sdk';
 import { BrowserProvider, getBytes } from 'ethers';
+import Web3 from 'web3';
+import { create } from 'ipfs-http-client';
+import OpenAI from 'openai';
 
 // ============================================
 // ESTADO GLOBAL
@@ -14,12 +17,17 @@ let pendingRequests = [];
 let userProfile = {
     username: '',
     theme: 'light',
-    nftProfile: null
+    nftProfile: null,
+    profilePicture: null,
+    customThemes: [],
+    stickerPacks: []
 };
 let friendDirectory = [];
 let messageQueue = [];
 let isOnline = navigator.onLine;
 let currentCall = null;
+let callState = 'idle'; // idle, calling, ringing, connected, ended
+let currentCallType = null; // 'voice' or 'video'
 
 const STORAGE_KEYS = {
     profile: 'xmtpUserProfile',
@@ -75,6 +83,9 @@ function loadUserProfile() {
             if (parsed && typeof parsed.username === 'string') {
                 userProfile.username = parsed.username;
             }
+            if (parsed && typeof parsed.profilePicture === 'string') {
+                userProfile.profilePicture = parsed.profilePicture;
+            }
         }
     } catch (error) {
         console.warn('Unable to load profile from storage', error);
@@ -83,6 +94,7 @@ function loadUserProfile() {
         displayNameInput.value = userProfile.username;
     }
     updateProfileUI();
+    updateProfilePictureUI();
 }
 
 function saveUserProfile() {
@@ -146,6 +158,19 @@ function updateProfileUI() {
     }
     if (displayNameInput && !displayNameInput.matches(':focus')) {
         displayNameInput.value = userProfile.username || '';
+    }
+}
+
+function updateProfilePictureUI() {
+    const img = document.getElementById('profileImage');
+    const placeholder = document.getElementById('profilePicturePlaceholder');
+    if (userProfile.profilePicture) {
+        img.src = userProfile.profilePicture;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+    } else {
+        img.style.display = 'none';
+        placeholder.style.display = 'block';
     }
 }
 
@@ -417,6 +442,59 @@ if (friendSearchInput) {
     friendSearchInput.addEventListener('input', (event) => {
         renderFriendList(event.target.value);
     });
+}
+
+// ============================================
+// PROFILE PICTURE HANDLING
+// ============================================
+const changeProfilePictureBtn = document.getElementById('changeProfilePictureBtn');
+const profilePictureInput = document.getElementById('profilePictureInput');
+
+if (changeProfilePictureBtn) {
+    changeProfilePictureBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        if (profilePictureInput) {
+            profilePictureInput.click();
+        }
+    });
+}
+
+if (profilePictureInput) {
+    profilePictureInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            handleProfilePictureUpload(file);
+        }
+    });
+}
+
+async function handleProfilePictureUpload(file) {
+    if (!file) return;
+
+    const maxSize = 5 * 1024 * 1024; // 5MB
+    if (file.size > maxSize) {
+        alert('Profile picture must be less than 5MB');
+        return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+        alert('Please select a valid image file');
+        return;
+    }
+
+    try {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            userProfile.profilePicture = e.target.result;
+            saveUserProfile();
+            updateProfilePictureUI();
+            log('✅ Profile picture updated!', 'success');
+        };
+        reader.readAsDataURL(file);
+    } catch (error) {
+        log(`❌ Profile picture upload failed: ${error.message}`, 'error');
+        alert('Failed to update profile picture: ' + error.message);
+    }
 }
 
 // ============================================
@@ -716,7 +794,13 @@ async function startVoiceCall() {
         return;
     }
 
+    if (callState !== 'idle') {
+        log('⚠️ Call already in progress', 'warning');
+        return;
+    }
+
     try {
+        callState = 'calling';
         log('📞 Starting voice call...', 'info');
 
         // Get user media
@@ -725,22 +809,28 @@ async function startVoiceCall() {
             video: false
         });
 
-        // Send call invitation via XMTP
+        // Initialize WebRTC as caller
+        await initializePeerConnection(true);
+
+        // Create offer
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+
+        // Send call offer via XMTP
         const callData = {
-            type: 'call_invite',
+            type: 'call_offer',
             callType: 'voice',
+            offer: offer,
             timestamp: Date.now()
         };
 
         await currentConversation.send(JSON.stringify(callData));
 
-        // Initialize WebRTC
-        await initializePeerConnection();
-
-        log('✅ Voice call started!', 'success');
-        updateCallUI(true, 'voice');
+        log('✅ Voice call offer sent!', 'success');
+        updateCallUI(true, 'voice', 'Calling...');
 
     } catch (error) {
+        callState = 'idle';
         log(`❌ Voice call failed: ${error.message}`, 'error');
         alert('Failed to start voice call: ' + error.message);
     }
@@ -752,7 +842,13 @@ async function startVideoCall() {
         return;
     }
 
+    if (callState !== 'idle') {
+        log('⚠️ Call already in progress', 'warning');
+        return;
+    }
+
     try {
+        callState = 'calling';
         log('📹 Starting video call...', 'info');
 
         // Get user media
@@ -761,28 +857,34 @@ async function startVideoCall() {
             video: true
         });
 
-        // Send call invitation
+        // Initialize WebRTC as caller
+        await initializePeerConnection(true);
+
+        // Create offer
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+
+        // Send call offer via XMTP
         const callData = {
-            type: 'call_invite',
+            type: 'call_offer',
             callType: 'video',
+            offer: offer,
             timestamp: Date.now()
         };
 
         await currentConversation.send(JSON.stringify(callData));
 
-        // Initialize WebRTC
-        await initializePeerConnection();
-
-        log('✅ Video call started!', 'success');
-        updateCallUI(true, 'video');
+        log('✅ Video call offer sent!', 'success');
+        updateCallUI(true, 'video', 'Calling...');
 
     } catch (error) {
+        callState = 'idle';
         log(`❌ Video call failed: ${error.message}`, 'error');
         alert('Failed to start video call: ' + error.message);
     }
 }
 
-async function initializePeerConnection() {
+async function initializePeerConnection(isCaller) {
     const configuration = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' }
@@ -792,9 +894,11 @@ async function initializePeerConnection() {
     peerConnection = new RTCPeerConnection(configuration);
 
     // Add local stream tracks
-    localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, localStream);
-    });
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+    }
 
     // Handle remote stream
     peerConnection.ontrack = (event) => {
@@ -815,6 +919,17 @@ async function initializePeerConnection() {
             currentConversation.send(JSON.stringify(candidateData));
         }
     };
+
+    // Handle connection state changes
+    peerConnection.onconnectionstatechange = () => {
+        log(`WebRTC connection state: ${peerConnection.connectionState}`, 'info');
+        if (peerConnection.connectionState === 'connected') {
+            callState = 'connected';
+            updateCallUI(true, currentCallType, 'Connected');
+        } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+            endCall();
+        }
+    };
 }
 
 function endCall() {
@@ -832,13 +947,14 @@ function endCall() {
     log('📞 Call ended', 'info');
 }
 
-function updateCallUI(inCall, callType = null) {
+function updateCallUI(inCall, callType = null, status = null) {
     const callControls = document.getElementById('callControls');
     if (callControls) {
         if (inCall) {
+            const statusText = status || `In ${callType} call`;
             callControls.innerHTML = `
                 <div class="call-active">
-                    <span>${callType === 'video' ? '📹' : '📞'} In ${callType} call</span>
+                    <span>${callType === 'video' ? '📹' : '📞'} ${statusText}</span>
                     <button id="endCallBtn" class="end-call-btn">End Call</button>
                 </div>
             `;
@@ -850,21 +966,83 @@ function updateCallUI(inCall, callType = null) {
 }
 
 // Handle incoming call messages
-function handleCallMessage(message) {
+async function handleCallMessage(message) {
     try {
         const callData = JSON.parse(message.content);
 
-        if (callData.type === 'call_invite') {
+        if (callData.type === 'call_offer') {
+            if (callState !== 'idle') {
+                // Send busy response
+                const busyData = {
+                    type: 'call_response',
+                    status: 'busy',
+                    timestamp: Date.now()
+                };
+                currentConversation.send(JSON.stringify(busyData));
+                return;
+            }
+
             const accept = confirm(`Incoming ${callData.callType} call. Accept?`);
             if (accept) {
-                if (callData.callType === 'voice') {
-                    startVoiceCall();
-                } else if (callData.callType === 'video') {
-                    startVideoCall();
-                }
+                callState = 'ringing';
+                log(`📞 Accepting ${callData.callType} call...`, 'info');
+
+                // Get user media
+                const constraints = {
+                    audio: true,
+                    video: callData.callType === 'video'
+                };
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                // Initialize WebRTC as callee
+                await initializePeerConnection(false);
+
+                // Set remote description (offer)
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
+
+                // Create answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                // Send answer
+                const answerData = {
+                    type: 'call_answer',
+                    answer: answer,
+                    timestamp: Date.now()
+                };
+                await currentConversation.send(JSON.stringify(answerData));
+
+                callState = 'connected';
+                log('✅ Call connected!', 'success');
+                updateCallUI(true, callData.callType, 'Connected');
+
+            } else {
+                // Send decline response
+                const declineData = {
+                    type: 'call_response',
+                    status: 'declined',
+                    timestamp: Date.now()
+                };
+                currentConversation.send(JSON.stringify(declineData));
+            }
+        } else if (callData.type === 'call_answer' && peerConnection) {
+            // Handle answer from callee
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.answer));
+            callState = 'connected';
+            log('✅ Call connected!', 'success');
+            updateCallUI(true, callState === 'calling' ? 'video' : 'voice', 'Connected');
+        } else if (callData.type === 'call_response') {
+            if (callData.status === 'busy') {
+                alert('Recipient is busy');
+                endCall();
+            } else if (callData.status === 'declined') {
+                alert('Call declined');
+                endCall();
             }
         } else if (callData.type === 'ice_candidate' && peerConnection) {
             peerConnection.addIceCandidate(new RTCIceCandidate(callData.candidate));
+        } else if (callData.type === 'end_call') {
+            endCall();
         }
     } catch (error) {
         // Not a call message, ignore
@@ -1244,7 +1422,7 @@ async function streamMessages() {
 // ============================================
 // MOSTRAR MENSAJE
 // ============================================
-function displayMessage(message) {
+async function displayMessage(message) {
     if (messagesDiv.querySelector('.empty-state')) {
         messagesDiv.innerHTML = '';
     }
@@ -1257,7 +1435,7 @@ function displayMessage(message) {
     }
 
     // Handle call messages
-    handleCallMessage(message);
+    await handleCallMessage(message);
 
     // Detectar si es un mensaje del sistema (content no es string)
     if (!message.content || typeof message.content !== 'string') {
