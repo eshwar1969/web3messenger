@@ -1,0 +1,18 @@
+{
+  "name": "xmtp-v3-demo",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "XMTP V3 messaging demo con Ethers v6",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@xmtp/browser-sdk": "^4.0.0",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

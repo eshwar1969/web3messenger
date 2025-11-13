@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XMTP V3 Demo</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="top-nav">
+            <div class="brand">
+                <div class="brand-mark">XMTP</div>
+                <div class="brand-copy">Messaging reinvented for Web2 UX</div>
+            </div>
+            <div class="nav-status">
+                <button id="navProfileTrigger" class="ghost-action profile-trigger">Set display name</button>
+                <span id="status" class="status disconnected">Wallet disconnected</span>
+            </div>
+        </header>
+
+        <main class="app-main">
+            <section id="landingView" class="landing-view">
+                <div class="landing-card">
+                    <div class="landing-copy">
+                        <h1>Chat like Web2, secured by Web3.</h1>
+                        <p>Spin up decentralized conversations over XMTP V3 with a polished Web2-inspired messenger. Connect your wallet to unlock your inbox, start DMs, and sync messages in real time.</p>
+                        <button id="connectBtn" class="primary-action">🦊 Connect wallet</button>
+                        <div class="profile-setup">
+                            <label for="displayNameInput">Choose your display name</label>
+                            <div class="profile-input">
+                                <input id="displayNameInput" type="text" placeholder="e.g. orbitlabs" autocomplete="off">
+                                <button id="saveDisplayNameBtn" class="ghost-action profile-save">Save</button>
+                            </div>
+                            <p class="profile-hint">Save a name your friends recognize and share it alongside your inbox ID.</p>
+                        </div>
+                        <div class="landing-hint">
+                            Don’t have MetaMask? <a href="https://metamask.io/download/" target="_blank" rel="noopener noreferrer">Install it here</a>.
+                        </div>
+                    </div>
+                    <div class="landing-preview">
+                        <div class="preview-card">
+                            <div class="preview-header">
+                                <div class="preview-title">Inbox snapshot</div>
+                                <div class="preview-indicator">Live</div>
+                            </div>
+                            <div class="preview-message sent">
+                                <span class="bubble-title">You</span>
+                                <span class="bubble-text">Ready to test the new XMTP drop?</span>
+                            </div>
+                            <div class="preview-message received">
+                                <span class="bubble-title">peer.inbox</span>
+                                <span class="bubble-text">Always. Sending over the inbox ID now.</span>
+                            </div>
+                            <div class="preview-message sent">
+                                <span class="bubble-title">You</span>
+                                <span class="bubble-text">Perfect — let’s sync in the dev network.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h3>Wallet-first onboarding</h3>
+                        <p>Authenticate with MetaMask and create an XMTP V3 identity in one click.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>DM-ready tooling</h3>
+                        <p>Look up peers by Ethereum address or inbox ID, then spin up chats instantly.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>Real-time streams</h3>
+                        <p>Conversations and messages stay fresh thanks to live XMTP streaming.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="chatView" class="chat-view" style="display: none;">
+                <aside class="chat-sidebar">
+                    <div class="sidebar-card highlight">
+                        <h2>Your wallet</h2>
+                        <div class="profile-chip" id="profileChip" style="display: none;"></div>
+                        <div id="walletInfo" class="wallet-info" style="display: none;"></div>
+                        <div class="info-box">
+                            💡 XMTP V3 + MetaMask keeps your real identity under your control.
+                        </div>
+                    </div>
+
+                    <div class="sidebar-card" id="friendDirectory" style="display: none;">
+                        <div class="card-header">
+                            <h2>Friend directory</h2>
+                            <span class="card-subtitle">Save handles mapped to inbox IDs</span>
+                        </div>
+                        <div class="profile-input compact">
+                            <input type="text" id="friendSearch" placeholder="Search @username or inbox…" autocomplete="off">
+                        </div>
+                        <div class="friend-form">
+                            <input type="text" id="friendUsername" placeholder="@username" autocomplete="off">
+                            <input type="text" id="friendInboxId" placeholder="Inbox ID or 0x address" autocomplete="off">
+                            <div class="friend-actions">
+                                <select id="friendContactType">
+                                    <option value="inbox">Inbox ID</option>
+                                    <option value="address">Ethereum address</option>
+                                </select>
+                                <button id="addFriendBtn" class="secondary-action">Save friend</button>
+                            </div>
+                        </div>
+                        <div id="friendList" class="friend-list"></div>
+                    </div>
+
+                    <div class="sidebar-card" id="conversationsSection" style="display: none;">
+                        <div class="card-header">
+                            <h2>Start a DM</h2>
+                            <span class="card-subtitle">Search by wallet or inbox ID</span>
+                        </div>
+
+                        <label class="input-label">
+                            <input type="radio" name="addressType" value="address" checked>
+                            Ethereum address (0x…)
+                        </label>
+                        <input type="text" id="recipientAddress" placeholder="0x0000...">
+
+                        <label class="input-label">
+                            <input type="radio" name="addressType" value="inboxId">
+                            Inbox ID (recommended on devnet)
+                        </label>
+                        <input type="text" id="recipientInboxId" placeholder="peer.inbox.xyz">
+
+                        <button id="startDmBtn" class="secondary-action">Start DM</button>
+
+                        <div class="info-box subtle">
+                            🔍 Tip: Share your inbox ID with teammates for the fastest connection.
+                        </div>
+
+                        <div class="card-header conversations">
+                            <h2>Inbox</h2>
+                            <span class="card-subtitle">Live conversations</span>
+                        </div>
+                        <div id="conversationsList" class="conversations-list"></div>
+                    </div>
+                </aside>
+
+                <section class="chat-content">
+                    <div class="chat-panel" id="messagesSection" style="display: none;">
+                        <div class="panel-header">
+                            <div id="currentConversation" class="current-conv">
+                                <strong>Select a conversation</strong>
+                            </div>
+                        </div>
+                        <div id="messages" class="messages">
+                            <div class="empty-state">
+                                Choose or create a conversation to start messaging.
+                            </div>
+                        </div>
+                        <div class="composer">
+                            <textarea id="messageInput" placeholder="Type your message…" rows="3"></textarea>
+                            <button id="sendBtn" class="primary-action">Send</button>
+                        </div>
+                    </div>
+
+                    <div class="chat-panel logs-panel">
+                        <div class="panel-header">
+                            <h2>Activity</h2>
+                            <button id="clearLogs" class="ghost-action">Clear</button>
+                        </div>
+                        <div id="logs" class="logs"></div>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+    
+    <script type="module" src="main.js"></script>
+</body>
+</html>
