@@ -18,10 +18,7 @@ const CreateRoom: React.FC = () => {
       return;
     }
 
-    if (!roomName.trim()) {
-      alert('Please enter a room name');
-      return;
-    }
+    // Room name is optional - allow creating without name
 
     try {
       setIsCreating(true);
@@ -34,24 +31,19 @@ const CreateRoom: React.FC = () => {
       // Start with empty array - creator is automatically added
       const room = await XmtpService.getInstance().createGroup([]);
       
-      // Send room name as first message
-      if (roomName.trim()) {
-        try {
-          await room.send(`🏠 Room: ${roomName.trim()}\n\nRoom ID: ${room.id}\n\nShare this Room ID with others to join!`);
-        } catch (e) {
-          console.log('Could not send room name message:', e);
-        }
-      } else {
-        // Send room ID even if no name
-        try {
-          await room.send(`🏠 Room created!\n\nRoom ID: ${room.id}\n\nShare this Room ID with others to join!`);
-        } catch (e) {
-          console.log('Could not send room ID message:', e);
-        }
+      // Send room info as first message
+      const roomInfoMessage = roomName.trim() 
+        ? `🏠 Room: ${roomName.trim()}\n\nRoom ID: ${room.id}\n\nShare this Room ID with others. They'll need to share their wallet address with you to be added.`
+        : `🏠 Room created!\n\nRoom ID: ${room.id}\n\nShare this Room ID with others. They'll need to share their wallet address with you to be added.`;
+      
+      try {
+        await room.send(roomInfoMessage);
+      } catch (e) {
+        console.log('Could not send room info message:', e);
       }
 
       window.dispatchEvent(new CustomEvent('app-log', {
-        detail: { message: `✅ Room "${roomName}" created!`, type: 'success' }
+        detail: { message: `✅ Room ${roomName.trim() ? `"${roomName}"` : ''} created!`, type: 'success' }
       }));
 
       setCreatedRoom(room);
@@ -141,16 +133,24 @@ const CreateRoom: React.FC = () => {
               }
             }}
             disabled={isCreating}
+            style={{ marginBottom: '12px' }}
           />
           <button
-            className="secondary-action"
+            className="primary-action"
             onClick={handleCreateRoom}
             disabled={isCreating || !xmtpClient}
+            style={{ width: '100%', marginBottom: '12px' }}
           >
             {isCreating ? 'Creating...' : '🏠 Create Room'}
           </button>
-          <div className="info-box subtle">
-            💡 Rooms allow multiple people to chat together. Share the Room ID to invite others.
+          <div className="info-box subtle" style={{ fontSize: '12px', lineHeight: '1.5' }}>
+            <strong>💡 How it works:</strong>
+            <ol style={{ margin: '8px 0 0 0', paddingLeft: '20px' }}>
+              <li>Create a room and get a Room ID</li>
+              <li>Share the Room ID with others</li>
+              <li>They'll share their wallet address with you</li>
+              <li>Add them using the "Add Member" section in the room</li>
+            </ol>
           </div>
         </>
       )}

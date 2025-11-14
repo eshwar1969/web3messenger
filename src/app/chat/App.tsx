@@ -15,10 +15,15 @@ import CreateRoom from '../../components/CreateRoom';
 import JoinRoom from '../../components/JoinRoom';
 import ActivityLogs from '../../components/ActivityLogs';
 import { ProfileService } from '../../services/profile.service';
+import { useAppStore } from '../../store/useAppStore';
 
 const App: React.FC = () => {
-  const { isConnected, error } = useXmtp();
+  const { isConnected, error, walletAddress } = useXmtp();
   const { conversations } = useConversations();
+  const { walletAddress: walletAddressFromStore } = useAppStore();
+  
+  // Show chat view if we have a wallet address OR if XMTP is connected
+  const shouldShowChatView = isConnected || walletAddress || walletAddressFromStore;
 
   // Load profile on mount
   useEffect(() => {
@@ -42,13 +47,13 @@ const App: React.FC = () => {
       </header>
 
       <main className="app-main">
-        <section id="landingView" className={`landing-view ${!isConnected ? 'active' : ''}`} style={{ display: isConnected ? 'none' : 'block' }}>
+        <section id="landingView" className={`landing-view ${!shouldShowChatView ? 'active' : ''}`} style={{ display: shouldShowChatView ? 'none' : 'block' }}>
           <div className="landing-card">
             <div className="landing-copy">
               <h1>Chat like Web2, secured by Web3.</h1>
               <p>Spin up decentralized conversations over XMTP V3 with a polished Web2-inspired messenger. Connect your wallet to unlock your inbox, start DMs, and sync messages in real time.</p>
               <WalletConnect />
-              {!isConnected && <LandingProfileSetup />}
+              {!shouldShowChatView && <LandingProfileSetup />}
               <div className="landing-hint">
                 Don't have MetaMask? <a href="https://metamask.io/download/" target="_blank" rel="noopener noreferrer">Install it here</a>.
               </div>
@@ -91,7 +96,7 @@ const App: React.FC = () => {
           </div>
         </section>
 
-        {isConnected && (
+        {shouldShowChatView && (
           <section id="chatView" className="chat-view">
             <aside className="chat-sidebar">
               <div className="sidebar-card highlight">

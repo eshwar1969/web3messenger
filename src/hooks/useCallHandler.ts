@@ -74,7 +74,11 @@ export const useCallHandler = () => {
             WebRTCService.getInstance().endCall();
           }
         } else if (callData.type === 'ice_candidate') {
-          await WebRTCService.getInstance().addIceCandidate(callData.candidate);
+          // Only add ICE candidate if we have an active call
+          const currentCallState = useAppStore.getState().callState;
+          if (currentCallState.state !== 'idle') {
+            await WebRTCService.getInstance().addIceCandidate(callData.candidate);
+          }
         } else if (callData.type === 'end_call') {
           WebRTCService.getInstance().endCall();
         }

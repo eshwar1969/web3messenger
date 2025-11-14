@@ -10,6 +10,7 @@ import { WebRTCService } from '../services/webrtc.service';
 import CallControls from './CallControls';
 import AddRoomMember from './AddRoomMember';
 import { useCallHandler } from '../hooks/useCallHandler';
+import { ConversationService } from '../services/conversation.service';
 
 const ChatWindow: React.FC = () => {
   // Handle incoming call messages
@@ -22,6 +23,18 @@ const ChatWindow: React.FC = () => {
   const { currentConversation, messages } = useAppStore();
   const { sendMessage } = useMessages();
   const { selectConversation } = useConversations();
+
+  // Get conversation name if it exists
+  const getConversationDisplayName = (conv: any) => {
+    if (!conv) return null;
+    const customName = ConversationService.getInstance().getConversationName(conv.id);
+    if (customName) return customName;
+    
+    if (conv.version === 'DM' && conv.peerInboxId) {
+      return FormatUtils.getInstance().formatInboxId(conv.peerInboxId);
+    }
+    return null;
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -167,32 +180,43 @@ const ChatWindow: React.FC = () => {
     <div className="chat-panel" id="messagesSection">
       <div className="panel-header">
         <div id="currentConversation" className="current-conv">
-          {currentConversation.version === 'DM' && currentConversation.peerInboxId ? (
-            <strong>💬 DM with: {currentConversation.peerInboxId}</strong>
-          ) : (
-            <div>
-              <strong>🏠 Room: {currentConversation.memberInboxIds?.length || 0} members</strong>
-              <div className="room-id-info" style={{ marginTop: '8px', fontSize: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <small>Room ID: <code style={{ fontSize: '11px', wordBreak: 'break-all' }}>{currentConversation.id}</code></small>
-                  <button
-                    className="ghost-action tiny"
-                    onClick={() => {
-                      navigator.clipboard.writeText(currentConversation.id);
-                      window.dispatchEvent(new CustomEvent('app-log', {
-                        detail: { message: '📋 Room ID copied!', type: 'success' }
-                      }));
-                      alert('Room ID copied! Share this with others to join the room.');
-                    }}
-                    title="Copy Room ID"
-                    style={{ padding: '2px 6px', fontSize: '11px' }}
-                  >
-                    📋 Copy
-                  </button>
+          {(() => {
+            const displayName = getConversationDisplayName(currentConversation);
+            const memberCount = currentConversation.memberInboxIds?.length || 0;
+            
+            if (currentConversation.version === 'DM' && currentConversation.peerInboxId) {
+              return (
+                <strong>
+                  💬 {displayName || `DM with: ${FormatUtils.getInstance().formatInboxId(currentConversation.peerInboxId)}`}
+                </strong>
+              );
+            } else {
+              return (
+                <div>
+                  <strong>🏠 {displayName || 'Room'}: {memberCount} member{memberCount !== 1 ? 's' : ''}</strong>
+                  <div className="room-id-info" style={{ marginTop: '8px', fontSize: '12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <small>Room ID: <code style={{ fontSize: '11px', wordBreak: 'break-all' }}>{currentConversation.id}</code></small>
+                      <button
+                        className="ghost-action tiny"
+                        onClick={() => {
+                          navigator.clipboard.writeText(currentConversation.id);
+                          window.dispatchEvent(new CustomEvent('app-log', {
+                            detail: { message: '📋 Room ID copied!', type: 'success' }
+                          }));
+                          alert('Room ID copied! Share this with others to join the room.');
+                        }}
+                        title="Copy Room ID"
+                        style={{ padding: '2px 6px', fontSize: '11px' }}
+                      >
+                        📋 Copy
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+              );
+            }
+          })()}
         </div>
         {currentConversation && currentConversation.version !== 'DM' && (
           <AddRoomMember conversation={currentConversation} />

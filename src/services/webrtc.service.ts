@@ -90,8 +90,16 @@ export class WebRTCService {
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    if (!this.peerConnection) throw new Error('Peer connection not initialized');
-    await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    if (!this.peerConnection) {
+      console.warn('Peer connection not initialized, skipping ICE candidate');
+      return;
+    }
+    try {
+      await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (error) {
+      console.error('Error adding ICE candidate:', error);
+      // Don't throw - ICE candidates can fail if connection is already established
+    }
   }
 
   private async sendIceCandidate(candidate: RTCIceCandidate) {
