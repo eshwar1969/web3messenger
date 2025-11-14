@@ -33,6 +33,52 @@ export class XmtpService {
     };
   }
 
+  async clearLocalStorage(): Promise<void> {
+    try {
+      // Clear IndexedDB (used by XMTP for some data)
+      if ('indexedDB' in window) {
+        const databases = await indexedDB.databases();
+        for (const db of databases) {
+          if (db.name) {
+            indexedDB.deleteDatabase(db.name);
+          }
+        }
+      }
+
+      // Clear OPFS (Origin Private File System) - where XMTP stores its database
+      if ('storage' in navigator && 'getDirectory' in navigator.storage) {
+        try {
+          const root = await navigator.storage.getDirectory();
+          // List and remove all files/directories
+          for await (const [name] of root.entries()) {
+            try {
+              await root.removeEntry(name, { recursive: true });
+            } catch (e) {
+              console.warn(`Could not remove ${name}:`, e);
+            }
+          }
+        } catch (e) {
+          console.warn('Could not clear OPFS:', e);
+        }
+      }
+
+      // Clear localStorage items related to XMTP
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.includes('xmtp') || key.includes('XMTP'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+
+      console.log('Local storage cleared successfully');
+    } catch (error) {
+      console.error('Error clearing local storage:', error);
+      throw error;
+    }
+  }
+
   async initializeClient(signer: any, env: 'dev' | 'production' = 'dev'): Promise<Client> {
     const xmtpSigner: any = await this.createXmtpSigner(signer);
     this.client = await Client.create(xmtpSigner, { env }) as any;
@@ -138,5 +184,77 @@ export class XmtpService {
   async streamConversations() {
     if (!this.client) throw new Error('XMTP client not initialized');
     return await this.client.conversations.stream();
+  }
+
+  // Installation management methods - can be used WITHOUT creating a client
+  async getInboxState(inboxId: string, env: 'dev' | 'production' = 'dev') {
+    try {
+      // Use static method to get inbox state without creating a client
+      if (typeof (Client as any).inboxStateFromInboxIds === 'function') {
+        const inboxStates = await (Client as any).inboxStateFromInboxIds([inboxId], env);
+        return inboxStates && inboxStates.length > 0 ? inboxStates[0] : null;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error getting inbox state:', error);
+      throw error;
+    }
+  }
+
+  async revokeInstallations(signer: any, inboxId: string, installationBytes: Uint8Array[], env: 'dev' | 'production' = 'dev') {
+    try {
+      const xmtpSigner = await this.createXmtpSigner(signer);
+      
+      // Use static method to revoke installations without creating a client
+      if (typeof (Client as any).revokeInstallations === 'function') {
+        await (Client as any).revokeInstallations(xmtpSigner, inboxId, installationBytes, env);
+        return true;
+      }
+      throw new Error('revokeInstallations method not available');
+    } catch (error) {
+      console.error('Error revoking installations:', error);
+      throw error;
+    }
+  }
+
+  // Legacy methods (kept for backward compatibility)
+  async listInstallations() {
+    if (!this.client) throw new Error('XMTP client not initialized');
+    const client = this.client as any;
+    
+    // Try to get installations from the client
+    try {
+      if (client.installations && typeof client.installations.list === 'function') {
+        return await client.installations.list();
+      }
+      // Alternative: try direct method
+      if (typeof client.listInstallations === 'function') {
+        return await client.listInstallations();
+      }
+    } catch (error) {
+      console.error('Error listing installations:', error);
+    }
+    
+    return [];
+  }
+
+  async revokeInstallation(installationId: string) {
+    if (!this.client) throw new Error('XMTP client not initialized');
+    const client = this.client as any;
+    
+    try {
+      if (client.installations && typeof client.installations.revoke === 'function') {
+        return await client.installations.revoke(installationId);
+      }
+      // Alternative: try direct method
+      if (typeof client.revokeInstallation === 'function') {
+        return await client.revokeInstallation(installationId);
+      }
+    } catch (error) {
+      console.error('Error revoking installation:', error);
+      throw error;
+    }
+    
+    throw new Error('Revoke installation method not available');
   }
 }

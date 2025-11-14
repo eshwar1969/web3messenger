@@ -71,13 +71,36 @@ export const useXmtp = () => {
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to connect';
-      setError(errorMessage);
-      setStoreError(errorMessage);
+      const errorString = err instanceof Error ? err.toString() : String(err);
+      let displayError = errorMessage;
+      
+      // Check if it's an installation limit error
+      if ((errorMessage.includes('already registered') || errorMessage.includes('installations')) && 
+          (errorMessage.includes('10/10') || errorMessage.includes('10') || errorString.includes('InboxID'))) {
+        // Try to extract inbox ID from the full error
+        const inboxIdMatch = errorString.match(/InboxID\s+([a-f0-9]{64})/i) || 
+                            errorMessage.match(/InboxID\s+([a-f0-9]{64})/i);
+        const inboxId = inboxIdMatch ? inboxIdMatch[1] : null;
+        
+        // Store the full error with inbox ID for later use
+        const fullError = inboxId ? `${errorMessage} (InboxID: ${inboxId})` : errorMessage;
+        displayError = 'Installation limit reached. You have 10/10 installations registered. Please revoke old installations to create a new one.' + 
+                      (inboxId ? `\n\nYour Inbox ID: ${inboxId}` : '');
+        
+        // Store the inbox ID in a way that ConnectPage can access it
+        if (inboxId) {
+          sessionStorage.setItem('xmtp_inbox_id', inboxId);
+        }
+      }
+      
+      setError(displayError);
+      setStoreError(displayError);
       console.error('Connection error:', err);
+      console.error('Full error string:', errorString);
       
       // Dispatch error log
       window.dispatchEvent(new CustomEvent('app-log', {
-        detail: { message: `❌ Error: ${errorMessage}`, type: 'error' }
+        detail: { message: `❌ Error: ${displayError}`, type: 'error' }
       }));
     } finally {
       setIsInitializing(false);
