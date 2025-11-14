@@ -15,6 +15,79 @@ import CallControls from '../components/CallControls';
 import NewChatPanel from '../components/NewChatPanel';
 import AddRoomMember from '../components/AddRoomMember';
 
+// Voice Player Component
+const VoicePlayer: React.FC<{ audioUrl: string }> = ({ audioUrl }) => {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const updateTime = () => setCurrentTime(audio.currentTime);
+    const updateDuration = () => setDuration(audio.duration);
+    const handleEnded = () => setIsPlaying(false);
+
+    audio.addEventListener('timeupdate', updateTime);
+    audio.addEventListener('loadedmetadata', updateDuration);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('timeupdate', updateTime);
+      audio.removeEventListener('loadedmetadata', updateDuration);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (isPlaying) {
+      audio.pause();
+    } else {
+      audio.play();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '200px' }}>
+      <audio ref={audioRef} src={audioUrl} preload="metadata" />
+      <button
+        onClick={togglePlay}
+        style={{
+          background: '#667eea',
+          border: 'none',
+          borderRadius: '50%',
+          width: '36px',
+          height: '36px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          color: 'white',
+          fontSize: '16px'
+        }}
+      >
+        {isPlaying ? '⏸️' : '▶️'}
+      </button>
+      <div style={{ flex: 1, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+        {formatTime(currentTime)} / {formatTime(duration)}
+      </div>
+    </div>
+  );
+};
+
 const ChatPage: React.FC = () => {
   const router = useRouter();
   const { isConnected } = useXmtp();
@@ -28,10 +101,16 @@ const ChatPage: React.FC = () => {
   const [showAddressModal, setShowAddressModal] = useState(false);
   const [showMenuDropdown, setShowMenuDropdown] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState(false);
+  const [showMembersModal, setShowMembersModal] = useState(false);
   const [renameInput, setRenameInput] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuDropdownRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Handle calls
   useCallHandler();
@@ -79,6 +158,12 @@ const ChatPage: React.FC = () => {
     e.preventDefault();
     if (!messageInput.trim() || isSending) return;
 
+    // Check if room is blocked
+    if (currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id)) {
+      alert('This room is blocked. Please unblock it first to send messages.');
+      return;
+    }
+
     try {
       setIsSending(true);
       await sendMessage(messageInput.trim());
@@ -94,6 +179,15 @@ const ChatPage: React.FC = () => {
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Check if room is blocked
+      if (currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id)) {
+        alert('This room is blocked. Please unblock it first to send files.');
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        return;
+      }
+
       try {
         setIsSending(true);
         await FileService.getInstance().handleFileUpload(file);
@@ -108,6 +202,128 @@ const ChatPage: React.FC = () => {
       }
     }
   };
+
+  const startVoiceRecording = async () => {
+    if (!currentConversation) {
+      alert('Select a conversation first');
+      return;
+    }
+
+    // Check if room is blocked
+    if (currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id)) {
+      alert('This room is blocked. Please unblock it first to send voice messages.');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await sendVoiceMessage(audioBlob);
+        
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      // Start timer
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '🎤 Recording started...', type: 'info' }
+      }));
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      alert('Failed to start recording. Please allow microphone access.');
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      setRecordingTime(0);
+      
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+        recordingIntervalRef.current = null;
+      }
+
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '✅ Recording stopped', type: 'success' }
+      }));
+    }
+  };
+
+  const sendVoiceMessage = async (audioBlob: Blob) => {
+    try {
+      setIsSending(true);
+
+      // Convert blob to base64
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]); // Remove data:audio/webm;base64, prefix
+        };
+        reader.onerror = reject;
+      });
+
+      // Create voice message attachment
+      const attachment = {
+        filename: `voice_${Date.now()}.webm`,
+        mimeType: 'audio/webm',
+        data: base64Data,
+        type: 'voice_message'
+      };
+
+      // Send as JSON-encoded attachment
+      const content = JSON.stringify({
+        type: 'attachment',
+        attachment: attachment
+      });
+
+      if (currentConversation) {
+        await currentConversation.send(content);
+        window.dispatchEvent(new CustomEvent('app-log', {
+          detail: { message: '✅ Voice message sent!', type: 'success' }
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to send voice message:', error);
+      alert('Failed to send voice message');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+      if (mediaRecorderRef.current && isRecording) {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, [isRecording]);
 
   const getConversationDisplayName = (conv: any) => {
     if (!conv) return 'Unknown';
@@ -177,6 +393,80 @@ const ChatPage: React.FC = () => {
     setShowMenuDropdown(false);
   };
 
+  const handleShowMembers = () => {
+    setShowMembersModal(true);
+    setShowMenuDropdown(false);
+  };
+
+  // Helper function to check if a room is blocked
+  const isRoomBlocked = (roomId: string): boolean => {
+    const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
+    return blockedRooms.includes(roomId);
+  };
+
+  const handleBlockRoom = async () => {
+    if (!currentConversation) return;
+    
+    if (confirm(`Are you sure you want to block this room? You will no longer receive messages from this room.`)) {
+      try {
+        // Store blocked room ID in localStorage
+        const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
+        if (!blockedRooms.includes(currentConversation.id)) {
+          blockedRooms.push(currentConversation.id);
+          localStorage.setItem('xmtp_blocked_rooms', JSON.stringify(blockedRooms));
+        }
+        
+        // Optionally, leave the room if possible
+        try {
+          if (currentConversation.removeMembers && xmtpClient?.inboxId) {
+            await currentConversation.removeMembers([xmtpClient.inboxId]);
+          }
+        } catch (e) {
+          console.log('Could not remove from room:', e);
+        }
+        
+        window.dispatchEvent(new CustomEvent('app-log', {
+          detail: { message: `🚫 Room blocked!`, type: 'success' }
+        }));
+        
+        // Reload conversations
+        await loadConversations();
+        // Clear current conversation
+        useAppStore.getState().setCurrentConversation(null);
+        
+        alert('Room blocked successfully!');
+      } catch (error) {
+        console.error('Error blocking room:', error);
+        alert('Failed to block room. Please try again.');
+      }
+    }
+    setShowMenuDropdown(false);
+  };
+
+  const handleUnblockRoom = async () => {
+    if (!currentConversation) return;
+    
+    try {
+      // Remove blocked room ID from localStorage
+      const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
+      const updatedRooms = blockedRooms.filter((id: string) => id !== currentConversation.id);
+      localStorage.setItem('xmtp_blocked_rooms', JSON.stringify(updatedRooms));
+      
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: `✅ Room unblocked!`, type: 'success' }
+      }));
+      
+      // Reload conversations
+      await loadConversations();
+      
+      alert('Room unblocked successfully! You can now send and receive messages.');
+    } catch (error) {
+      console.error('Error unblocking room:', error);
+      alert('Failed to unblock room. Please try again.');
+    }
+    setShowMenuDropdown(false);
+  };
+
   const handleSaveRename = async () => {
     if (!currentConversation) return;
     
@@ -225,6 +515,84 @@ const ChatPage: React.FC = () => {
     } catch (error) {
       console.error('Error saving room name:', error);
       alert('Failed to save room name. Please try again.');
+    }
+  };
+
+  const handleVoiceCall = async () => {
+    if (!currentConversation) {
+      alert('Select a conversation first');
+      return;
+    }
+
+    const { callState } = useAppStore.getState();
+    if (callState.state !== 'idle') {
+      alert('A call is already in progress');
+      return;
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '📞 Starting voice call...', type: 'info' }
+      }));
+
+      const constraints = { audio: true, video: false };
+      await WebRTCService.getInstance().getUserMedia(constraints);
+      await WebRTCService.getInstance().initializePeerConnection(true);
+      const offer = await WebRTCService.getInstance().createOffer();
+      await WebRTCService.getInstance().sendCallOffer('voice', offer);
+
+      useAppStore.getState().setCallState({ state: 'calling', type: 'voice' });
+      
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '✅ Voice call offer sent!', type: 'success' }
+      }));
+    } catch (error) {
+      console.error('Voice call failed:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: `❌ Voice call failed: ${errorMsg}`, type: 'error' }
+      }));
+      alert('Failed to start voice call: ' + errorMsg);
+      useAppStore.getState().setCallState({ state: 'idle', type: null });
+    }
+  };
+
+  const handleVideoCall = async () => {
+    if (!currentConversation) {
+      alert('Select a conversation first');
+      return;
+    }
+
+    const { callState } = useAppStore.getState();
+    if (callState.state !== 'idle') {
+      alert('A call is already in progress');
+      return;
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '📹 Starting video call...', type: 'info' }
+      }));
+
+      const constraints = { audio: true, video: true };
+      await WebRTCService.getInstance().getUserMedia(constraints);
+      await WebRTCService.getInstance().initializePeerConnection(true);
+      const offer = await WebRTCService.getInstance().createOffer();
+      await WebRTCService.getInstance().sendCallOffer('video', offer);
+
+      useAppStore.getState().setCallState({ state: 'calling', type: 'video' });
+      
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '✅ Video call offer sent!', type: 'success' }
+      }));
+    } catch (error) {
+      console.error('Video call failed:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: `❌ Video call failed: ${errorMsg}`, type: 'error' }
+      }));
+      alert('Failed to start video call: ' + errorMsg);
+      useAppStore.getState().setCallState({ state: 'idle', type: null });
     }
   };
 
@@ -306,6 +674,7 @@ const ChatPage: React.FC = () => {
             filteredConversations.map((conv: any, index: number) => {
               const isActive = currentConversation?.id === conv.id;
               const displayName = getConversationDisplayName(conv);
+              const isBlocked = conv.version !== 'DM' && isRoomBlocked(conv.id);
               // Get last message for this specific conversation
               const lastMessage = isActive && messages.length > 0 
                 ? messages[messages.length - 1] 
@@ -316,13 +685,17 @@ const ChatPage: React.FC = () => {
                   key={conv.id || index}
                   className={`conversation-item ${isActive ? 'active' : ''}`}
                   onClick={() => selectConversation(index)}
+                  style={isBlocked ? { opacity: 0.6, background: isActive ? '#fee2e2' : '#fef2f2' } : {}}
                 >
                   <div className="conversation-avatar">
                     {displayName.slice(0, 2).toUpperCase()}
                   </div>
                   <div className="conversation-info">
                     <div className="conversation-header">
-                      <div className="conversation-name">{displayName}</div>
+                      <div className="conversation-name">
+                        {displayName}
+                        {isBlocked && <span style={{ marginLeft: '8px', fontSize: '0.75rem', color: '#dc2626' }}>🚫</span>}
+                      </div>
                       {lastMessage && (
                         <div className="conversation-time">
                           {FormatUtils.getInstance().formatMessageTime(lastMessage.sentAtNs)}
@@ -330,7 +703,9 @@ const ChatPage: React.FC = () => {
                       )}
                     </div>
                     <div className="conversation-preview">
-                      {lastMessage ? (
+                      {isBlocked ? (
+                        <span style={{ color: '#dc2626', fontSize: '0.75rem' }}>Blocked</span>
+                      ) : lastMessage ? (
                         typeof lastMessage.content === 'string' ? (
                           lastMessage.content.slice(0, 50)
                         ) : (
@@ -364,7 +739,16 @@ const ChatPage: React.FC = () => {
                   {getInitials(getConversationDisplayName(currentConversation))}
                 </div>
                 <div className="chat-header-info">
-                  <h2>{getConversationDisplayName(currentConversation)}</h2>
+                  <h2 
+                    onClick={currentConversation.version !== 'DM' ? handleShowMembers : undefined}
+                    style={{ 
+                      cursor: currentConversation.version !== 'DM' ? 'pointer' : 'default',
+                      userSelect: 'none'
+                    }}
+                    title={currentConversation.version !== 'DM' ? 'Click to view members' : ''}
+                  >
+                    {getConversationDisplayName(currentConversation)}
+                  </h2>
                   <p>
                     {currentConversation.version === 'DM' 
                       ? 'Direct message' 
@@ -373,8 +757,20 @@ const ChatPage: React.FC = () => {
                 </div>
               </div>
               <div className="chat-header-actions" style={{ position: 'relative' }}>
-                <button className="icon-btn" title="Voice call">📞</button>
-                <button className="icon-btn" title="Video call">📹</button>
+                <button 
+                  className="icon-btn" 
+                  title="Voice call"
+                  onClick={handleVoiceCall}
+                >
+                  📞
+                </button>
+                <button 
+                  className="icon-btn" 
+                  title="Video call"
+                  onClick={handleVideoCall}
+                >
+                  📹
+                </button>
                 <div ref={menuDropdownRef} style={{ position: 'relative' }}>
                   <button 
                     className="icon-btn" 
@@ -416,6 +812,51 @@ const ChatPage: React.FC = () => {
                       >
                         ✏️ Change Room Name
                       </button>
+                      {isRoomBlocked(currentConversation.id) ? (
+                        <button
+                          onClick={handleUnblockRoom}
+                          style={{
+                            width: '100%',
+                            padding: '12px 16px',
+                            border: 'none',
+                            background: 'transparent',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            color: '#059669',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            borderTop: '1px solid var(--border-color)'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = '#d1fae5'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        >
+                          ✅ Unblock Room
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleBlockRoom}
+                          style={{
+                            width: '100%',
+                            padding: '12px 16px',
+                            border: 'none',
+                            background: 'transparent',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            color: '#dc2626',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            borderTop: '1px solid var(--border-color)'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = '#fee2e2'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        >
+                          🚫 Block Room
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -446,7 +887,16 @@ const ChatPage: React.FC = () => {
             )}
 
             <div className="chat-messages">
-              {messages.length === 0 ? (
+              {currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id) ? (
+                <div className="empty-chat">
+                  <div className="empty-chat-icon">🚫</div>
+                  <h3>This room is blocked</h3>
+                  <p>You cannot send or receive messages in this room.</p>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+                    Use the menu (⋯) to unblock this room.
+                  </p>
+                </div>
+              ) : messages.length === 0 ? (
                 <div className="empty-chat">
                   <div className="empty-chat-icon">💬</div>
                   <h3>No messages yet</h3>
@@ -489,6 +939,26 @@ const ChatPage: React.FC = () => {
                         const attachment = parsed.attachment;
                         const downloadUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
                         
+                        // Handle voice messages
+                        if (attachment.type === 'voice_message' || attachment.mimeType?.startsWith('audio/')) {
+                          return (
+                            <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
+                              <div className="message-bubble">
+                                <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                  <VoicePlayer audioUrl={downloadUrl} />
+                                  <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                                    🎤 Voice message
+                                  </span>
+                                </div>
+                                <div className="message-time">
+                                  {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+                        
+                        // Regular file attachments
                         return (
                           <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
                             <div className="message-bubble">
@@ -529,46 +999,93 @@ const ChatPage: React.FC = () => {
 
             <CallControls />
 
-            <form className="chat-input-container" onSubmit={handleSendMessage}>
-              <input
-                ref={fileInputRef}
-                type="file"
-                style={{ display: 'none' }}
-                onChange={handleFileSelect}
-              />
-              <div className="chat-input-wrapper">
-                <button
-                  type="button"
-                  className="input-action-btn"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Attach file"
-                >
-                  📎
-                </button>
-                <textarea
-                  className="chat-input"
-                  placeholder="Type a message"
-                  value={messageInput}
-                  onChange={(e) => setMessageInput(e.target.value)}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage(e as any);
-                    }
-                  }}
-                  rows={1}
-                  disabled={isSending}
-                />
+            {currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id) ? (
+              <div style={{ 
+                padding: '1rem', 
+                textAlign: 'center', 
+                background: '#fee2e2', 
+                color: '#dc2626',
+                borderTop: '1px solid #fecaca',
+                fontSize: '0.875rem'
+              }}>
+                🚫 This room is blocked. Unblock it from the menu (⋯) to send messages.
               </div>
-              <button
-                type="submit"
-                className="send-btn"
-                disabled={!messageInput.trim() || isSending}
-                title="Send message"
-              >
-                ➤
-              </button>
-            </form>
+            ) : (
+              <form className="chat-input-container" onSubmit={handleSendMessage}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  style={{ display: 'none' }}
+                  onChange={handleFileSelect}
+                />
+                <div className="chat-input-wrapper">
+                  <button
+                    type="button"
+                    className="input-action-btn"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Attach file"
+                  >
+                    📎
+                  </button>
+                  <textarea
+                    className="chat-input"
+                    placeholder="Type a message"
+                    value={messageInput}
+                    onChange={(e) => setMessageInput(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage(e as any);
+                      }
+                    }}
+                    rows={1}
+                    disabled={isSending || isRecording}
+                  />
+                </div>
+                {isRecording ? (
+                  <button
+                    type="button"
+                    className="send-btn"
+                    onClick={stopVoiceRecording}
+                    style={{
+                      background: '#dc2626',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 16px'
+                    }}
+                    title="Stop recording"
+                  >
+                    <span>⏹️</span>
+                    <span>{Math.floor(recordingTime / 60)}:{(recordingTime % 60).toString().padStart(2, '0')}</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="send-btn"
+                      onClick={startVoiceRecording}
+                      disabled={isSending}
+                      style={{
+                        background: '#667eea',
+                        marginRight: '8px'
+                      }}
+                      title="Record voice message"
+                    >
+                      🎤
+                    </button>
+                    <button
+                      type="submit"
+                      className="send-btn"
+                      disabled={!messageInput.trim() || isSending}
+                      title="Send message"
+                    >
+                      ➤
+                    </button>
+                  </>
+                )}
+              </form>
+            )}
           </>
         )}
       </div>
@@ -797,6 +1314,191 @@ const ChatPage: React.FC = () => {
                 Save
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Members Modal */}
+      {showMembersModal && currentConversation && currentConversation.version !== 'DM' && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1002
+          }}
+          onClick={() => setShowMembersModal(false)}
+        >
+          <div 
+            style={{
+              background: 'white',
+              padding: '24px',
+              borderRadius: '12px',
+              maxWidth: '600px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', fontWeight: '600' }}>
+              Room Members ({memberCount})
+            </h3>
+            
+            <div style={{ marginBottom: '16px' }}>
+              {(() => {
+                const memberIds = currentConversation.memberInboxIds || [];
+                const currentUserInboxId = xmtpClient?.inboxId;
+                const allMembers = [...memberIds];
+                
+                // Add current user if not in the list
+                if (currentUserInboxId && !memberIds.includes(currentUserInboxId)) {
+                  allMembers.push(currentUserInboxId);
+                }
+                
+                if (allMembers.length === 0) {
+                  return (
+                    <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                      No members found
+                    </div>
+                  );
+                }
+                
+                return allMembers.map((inboxId: string, index: number) => {
+                  const isCurrentUser = inboxId === currentUserInboxId;
+                  
+                  return (
+                    <div
+                      key={index}
+                      style={{
+                        padding: '12px',
+                        marginBottom: '8px',
+                        background: isCurrentUser ? '#f0f7ff' : '#f8fafc',
+                        borderRadius: '8px',
+                        border: `1px solid ${isCurrentUser ? '#dbeafe' : '#e2e8f0'}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ 
+                            fontWeight: 600, 
+                            marginBottom: '6px',
+                            color: isCurrentUser ? '#1e40af' : 'var(--text-primary)',
+                            fontSize: '14px'
+                          }}>
+                            {isCurrentUser ? '👤 You' : `Member ${index + 1}`}
+                          </div>
+                          <div style={{ 
+                            fontSize: '0.75rem', 
+                            color: 'var(--text-secondary)',
+                            fontFamily: 'monospace',
+                            wordBreak: 'break-all',
+                            marginBottom: '4px'
+                          }}>
+                            <strong>Inbox ID:</strong> {inboxId}
+                          </div>
+                          {isCurrentUser && walletAddress && (
+                            <div style={{ 
+                              fontSize: '0.75rem', 
+                              color: 'var(--text-secondary)',
+                              fontFamily: 'monospace',
+                              wordBreak: 'break-all',
+                              marginTop: '4px'
+                            }}>
+                              <strong>Wallet Address:</strong> {walletAddress}
+                            </div>
+                          )}
+                          {!isCurrentUser && (
+                            <div style={{ 
+                              fontSize: '0.7rem', 
+                              color: '#6b7280',
+                              marginTop: '4px',
+                              fontStyle: 'italic'
+                            }}>
+                              💡 Wallet address not available (only inbox ID is stored)
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(inboxId);
+                            window.dispatchEvent(new CustomEvent('app-log', {
+                              detail: { message: '📋 Inbox ID copied!', type: 'success' }
+                            }));
+                            alert('Inbox ID copied to clipboard!');
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'transparent',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem',
+                            whiteSpace: 'nowrap',
+                            marginLeft: '8px',
+                            alignSelf: 'flex-start'
+                          }}
+                          title="Copy inbox ID"
+                        >
+                          📋 Copy ID
+                        </button>
+                      </div>
+                      {isCurrentUser && walletAddress && (
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(walletAddress);
+                            window.dispatchEvent(new CustomEvent('app-log', {
+                              detail: { message: '📋 Wallet address copied!', type: 'success' }
+                            }));
+                            alert('Wallet address copied to clipboard!');
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'transparent',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem',
+                            whiteSpace: 'nowrap',
+                            alignSelf: 'flex-start'
+                          }}
+                          title="Copy wallet address"
+                        >
+                          📋 Copy Wallet
+                        </button>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+            
+            <button
+              onClick={() => setShowMembersModal(false)}
+              style={{ 
+                width: '100%', 
+                padding: '10px', 
+                background: '#667eea', 
+                color: 'white', 
+                border: 'none', 
+                borderRadius: '8px', 
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '600'
+              }}
+            >
+              Close
+            </button>
           </div>
         </div>
       )}

@@ -48,18 +48,6 @@ export const useConversations = () => {
     }
   }, [xmtpClient, setConversations]);
 
-  const selectConversation = useCallback(async (index: number) => {
-    const conversation = conversations[index];
-    if (!conversation) return;
-
-    setCurrentConversation(conversation);
-    console.log('Conversation selected');
-
-    // Load messages for the selected conversation
-    await loadMessages(conversation);
-
-  }, [conversations, setCurrentConversation]);
-
   const loadMessages = useCallback(async (conversation: any) => {
     try {
       await conversation.sync();
@@ -77,6 +65,28 @@ export const useConversations = () => {
       console.error('Error loading messages:', err);
     }
   }, [setMessages]);
+
+  const selectConversation = useCallback(async (index: number) => {
+    const conversation = conversations[index];
+    if (!conversation) return;
+
+    // Check if room is blocked
+    const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
+    if (conversation.version !== 'DM' && blockedRooms.includes(conversation.id)) {
+      // Still set the conversation so user can see the blocked message, but don't load messages
+      setCurrentConversation(conversation);
+      setMessages([]); // Clear messages for blocked rooms
+      console.log('Conversation selected (blocked room)');
+      return;
+    }
+
+    setCurrentConversation(conversation);
+    console.log('Conversation selected');
+
+    // Load messages for the selected conversation
+    await loadMessages(conversation);
+
+  }, [conversations, setCurrentConversation, setMessages, loadMessages]);
 
   const sendMessage = useCallback(async (content: string) => {
     if (!currentConversation) {
@@ -154,10 +164,24 @@ export const useConversations = () => {
 
     const streamMessages = async () => {
       try {
+        // Check if room is blocked
+        const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
+        if (currentConversation.version !== 'DM' && blockedRooms.includes(currentConversation.id)) {
+          // Don't stream messages for blocked rooms
+          return;
+        }
+
         console.log('Listening for new messages...');
         const stream = await currentConversation.stream();
 
         for await (const message of stream) {
+          // Check again if room is blocked (in case it was blocked while streaming)
+          const currentBlockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
+          if (currentConversation.version !== 'DM' && currentBlockedRooms.includes(currentConversation.id)) {
+            // Stop processing messages if room is blocked
+            break;
+          }
+
           console.log('New message received!');
           
           // Check if it's a special message type (call, room name change, etc.)
