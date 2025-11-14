@@ -7,7 +7,7 @@ import { ProfileService } from '../services/profile.service';
 import { FormatUtils } from '../utils/format';
 
 const WalletInfo: React.FC = () => {
-  const { userProfile, xmtpClient, walletAddress } = useAppStore();
+  const { userProfile, xmtpClient, walletAddress, isConnected } = useAppStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load profile on mount
@@ -52,6 +52,16 @@ const WalletInfo: React.FC = () => {
 
   const hasName = Boolean(userProfile.username);
 
+  // Show loading state if connected but wallet info not yet available
+  if (isConnected && !walletAddress) {
+    return (
+      <div className="wallet-info">
+        <p>Loading wallet information...</p>
+      </div>
+    );
+  }
+
+  // Don't show if not connected
   if (!walletAddress) return null;
 
   return (
@@ -63,6 +73,14 @@ const WalletInfo: React.FC = () => {
         </div>
       )}
       <div className="wallet-info">
+        <div className="wallet-line">
+          <div>
+            <p><strong>🙋 Display name</strong></p>
+            <p className="wallet-subtext">
+              {hasName ? `@${userProfile.username}` : <span className="wallet-subtext muted">Not set yet</span>}
+            </p>
+          </div>
+        </div>
         <div className="profile-picture-section">
           <div className="profile-picture-container">
             {userProfile.profilePicture ? (
@@ -90,12 +108,16 @@ const WalletInfo: React.FC = () => {
           </div>
         </div>
         <p><strong>🦊 Wallet:</strong> MetaMask</p>
-        <p><strong>🔑 Address:</strong> <code>{FormatUtils.getInstance().formatAddress(walletAddress)}</code></p>
-        {xmtpClient && (
-          <p><strong>📬 Inbox ID:</strong> <code>{xmtpClient.inboxId}</code></p>
+        <p><strong>🔑 Address:</strong> <code>{walletAddress}</code></p>
+        {xmtpClient ? (
+          <>
+            <p><strong>📬 Inbox ID:</strong> <code>{xmtpClient.inboxId}</code></p>
+            <p><strong>🌐 XMTP network:</strong> DEV (testing)</p>
+            <p className="wallet-subtext success">✅ Your MetaMask identity is now live on XMTP</p>
+          </>
+        ) : (
+          <p className="wallet-subtext">⏳ Initializing XMTP client...</p>
         )}
-        <p><strong>🌐 XMTP network:</strong> DEV (testing)</p>
-        <p className="wallet-subtext success">✅ Your MetaMask identity is now live on XMTP</p>
       </div>
     </>
   );

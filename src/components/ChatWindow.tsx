@@ -8,6 +8,7 @@ import { FormatUtils } from '../utils/format';
 import { FileService } from '../services/file.service';
 import { WebRTCService } from '../services/webrtc.service';
 import CallControls from './CallControls';
+import AddRoomMember from './AddRoomMember';
 import { useCallHandler } from '../hooks/useCallHandler';
 
 const ChatWindow: React.FC = () => {
@@ -169,9 +170,33 @@ const ChatWindow: React.FC = () => {
           {currentConversation.version === 'DM' && currentConversation.peerInboxId ? (
             <strong>💬 DM with: {currentConversation.peerInboxId}</strong>
           ) : (
-            <strong>💬 Group: {currentConversation.id}</strong>
+            <div>
+              <strong>🏠 Room: {currentConversation.memberInboxIds?.length || 0} members</strong>
+              <div className="room-id-info" style={{ marginTop: '8px', fontSize: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <small>Room ID: <code style={{ fontSize: '11px', wordBreak: 'break-all' }}>{currentConversation.id}</code></small>
+                  <button
+                    className="ghost-action tiny"
+                    onClick={() => {
+                      navigator.clipboard.writeText(currentConversation.id);
+                      window.dispatchEvent(new CustomEvent('app-log', {
+                        detail: { message: '📋 Room ID copied!', type: 'success' }
+                      }));
+                      alert('Room ID copied! Share this with others to join the room.');
+                    }}
+                    title="Copy Room ID"
+                    style={{ padding: '2px 6px', fontSize: '11px' }}
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
+        {currentConversation && currentConversation.version !== 'DM' && (
+          <AddRoomMember conversation={currentConversation} />
+        )}
       </div>
       <div id="messages" className="messages">
         {messages.length === 0 ? (

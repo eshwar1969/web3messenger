@@ -11,6 +11,8 @@ import LandingProfileSetup from '../../components/LandingProfileSetup';
 import WalletInfo from '../../components/WalletInfo';
 import FriendDirectory from '../../components/FriendDirectory';
 import StartDM from '../../components/StartDM';
+import CreateRoom from '../../components/CreateRoom';
+import JoinRoom from '../../components/JoinRoom';
 import ActivityLogs from '../../components/ActivityLogs';
 import { ProfileService } from '../../services/profile.service';
 
@@ -101,6 +103,9 @@ const App: React.FC = () => {
               </div>
 
               <FriendDirectory />
+
+              <CreateRoom />
+              <JoinRoom />
 
               <div className="sidebar-card">
                 <StartDM />

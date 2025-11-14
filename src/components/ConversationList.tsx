@@ -44,11 +44,13 @@ const ConversationList: React.FC = () => {
           title = FormatUtils.getInstance().formatInboxId(conv.peerInboxId);
           subtitle = conv.peerInboxId;
         } else if (conv.memberInboxIds && conv.memberInboxIds.length > 0) {
-          title = `Group: ${conv.id.slice(0, 8)}...`;
-          subtitle = `${conv.memberInboxIds.length} members`;
+          // It's a room/group
+          title = `🏠 Room (${conv.memberInboxIds.length} members)`;
+          subtitle = `ID: ${conv.id.slice(0, 12)}...`;
         } else {
-          title = `Chat: ${conv.id.slice(0, 8)}...`;
-          subtitle = conv.id;
+          // Room without members yet or unknown type
+          title = `🏠 Room`;
+          subtitle = `ID: ${conv.id.slice(0, 12)}...`;
         }
 
         return (
