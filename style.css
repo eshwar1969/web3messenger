@@ -631,10 +631,6 @@ textarea {
     justify-content: center;
 }
 
-.profile-picture-placeholder {
-    font-size: 32px;
-    color: rgba(79, 70, 229, 0.6);
-}
 
 .wallet-info p {
     margin: 8px 0;

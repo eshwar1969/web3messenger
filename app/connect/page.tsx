@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 
-const HomePage = dynamic(() => import('../src/pages/HomePage'), {
+const ConnectPage = dynamic(() => import('../../src/pages/ConnectPage'), {
   ssr: false,
   loading: () => (
     <div style={{ 
@@ -10,8 +10,8 @@ const HomePage = dynamic(() => import('../src/pages/HomePage'), {
       alignItems: 'center', 
       justifyContent: 'center', 
       height: '100vh',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      color: 'white',
+      background: 'var(--background-light)',
+      color: 'var(--text-primary)',
       fontSize: '1.25rem'
     }}>
       Loading...
@@ -19,6 +19,7 @@ const HomePage = dynamic(() => import('../src/pages/HomePage'), {
   )
 });
 
-export default function Home() {
-  return <HomePage />;
+export default function Connect() {
+  return <ConnectPage />;
 }
+

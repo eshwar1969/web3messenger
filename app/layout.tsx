@@ -2,7 +2,7 @@
 'use client';
 
 import { ReactNode } from 'react';
-import '../style.css';
+import '../styles/messenger.css';
 
 export default function RootLayout({
   children,

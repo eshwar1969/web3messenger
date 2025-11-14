@@ -3,8 +3,6 @@ const path = require('path');
 
 const nextConfig = {
   reactStrictMode: true,
-  // Ensure Next.js uses the project root for output tracing (silence lockfile warning)
-  outputFileTracingRoot: path.resolve(__dirname),
   webpack: (config, { isServer }) => {
     config.resolve.fallback = {
       ...config.resolve.fallback,

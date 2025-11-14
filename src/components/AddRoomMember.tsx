@@ -23,38 +23,45 @@ const AddRoomMember: React.FC<AddRoomMemberProps> = ({ conversation, onMemberAdd
     }
 
     if (!memberAddress.trim()) {
-      alert('Please enter a wallet address');
+      alert('Please enter a wallet address or inbox ID');
       return;
     }
 
-    // Validate address format
-    if (!/^0x[a-fA-F0-9]{40}$/i.test(memberAddress.trim())) {
-      alert('Invalid wallet address. Please use a valid Ethereum address (0x...).');
-      return;
-    }
+    const input = memberAddress.trim();
+    let inboxId: string | null = null;
 
-    try {
-      setIsAdding(true);
+    // Check if input is a wallet address (0x followed by 40 hex chars) or inbox ID
+    const isWalletAddress = /^0x[a-fA-F0-9]{40}$/i.test(input);
+    
+    // Set adding state early
+    setIsAdding(true);
 
+    if (isWalletAddress) {
+      // It's a wallet address - try to resolve to inbox ID
       window.dispatchEvent(new CustomEvent('app-log', {
         detail: { message: `🔍 Looking up wallet address...`, type: 'info' }
       }));
 
-      // Resolve wallet address to inbox ID
-      let inboxId: string | null = null;
+      // Try to get inbox ID from address
       let retries = 5;
       
       while (retries > 0 && !inboxId) {
         try {
-          inboxId = await XmtpService.getInstance().getInboxIdByAddress(memberAddress.trim().toLowerCase());
+          inboxId = await XmtpService.getInstance().getInboxIdByAddress(input.toLowerCase());
           if (inboxId) {
             window.dispatchEvent(new CustomEvent('app-log', {
               detail: { message: `✅ Found inbox ID for address`, type: 'success' }
             }));
             break;
           }
-        } catch (e) {
-          console.log(`Retry ${6 - retries}/5...`);
+        } catch (e: any) {
+          const errorMsg = e?.message || String(e);
+          // If method doesn't exist, don't retry
+          if (errorMsg.includes('not a function') || errorMsg.includes('is not a function')) {
+            console.error('getInboxIdByAddress method not available:', e);
+            break; // Exit retry loop
+          }
+          console.log(`Retry ${6 - retries}/5...`, e);
         }
         if (!inboxId && retries > 1) {
           await new Promise(resolve => setTimeout(resolve, 2000));
@@ -63,13 +70,70 @@ const AddRoomMember: React.FC<AddRoomMemberProps> = ({ conversation, onMemberAdd
       }
 
       if (!inboxId) {
-        alert('⚠️ Unable to find an inbox for this wallet address.\n\n' +
-              'The user may not have connected to XMTP yet. Ask them to:\n' +
-              '1. Connect their wallet to XMTP\n' +
-              '2. Share their wallet address again');
+        // Try workaround: create a temporary DM to get inbox ID
+        try {
+          window.dispatchEvent(new CustomEvent('app-log', {
+            detail: { message: `Trying alternative method to get inbox ID...`, type: 'info' }
+          }));
+          
+          const client = useAppStore.getState().xmtpClient;
+          if (client && (client as any).conversations) {
+            const identifier = {
+              identifier: input.toLowerCase(),
+              identifierKind: 'Ethereum' as const
+            };
+            
+            // Try to create DM with identifier to get inbox ID
+            if ((client as any).conversations.newDm) {
+              try {
+                const tempDm = await (client as any).conversations.newDm(identifier);
+                if (tempDm && tempDm.peerInboxId) {
+                  inboxId = tempDm.peerInboxId;
+                  window.dispatchEvent(new CustomEvent('app-log', {
+                    detail: { message: `✅ Got inbox ID via DM creation`, type: 'success' }
+                  }));
+                }
+              } catch (e) {
+                console.log('DM creation workaround failed:', e);
+              }
+            }
+          }
+        } catch (e) {
+          console.log('Workaround failed:', e);
+        }
+      }
+
+      if (!inboxId) {
+        // Provide helpful error message but don't exit - allow user to paste inbox ID
+        const useInboxId = confirm('⚠️ Unable to resolve inbox ID from wallet address.\n\n' +
+              'The user may not be registered on XMTP yet.\n\n' +
+              'Would you like to:\n' +
+              '• Click OK to ask them for their inbox ID\n' +
+              '• Click Cancel to try again');
+        
+        if (useInboxId) {
+          alert('Please ask the user to:\n' +
+                '1. Connect their wallet to XMTP\n' +
+                '2. Share their inbox ID with you\n' +
+                '3. Paste it in the input field above');
+        }
         setIsAdding(false);
         return;
       }
+    } else {
+      // Assume it's an inbox ID - use it directly
+      inboxId = input;
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: `Using inbox ID directly`, type: 'info' }
+      }));
+    }
+
+    if (!inboxId) {
+      setIsAdding(false);
+      return;
+    }
+
+    try {
 
       window.dispatchEvent(new CustomEvent('app-log', {
         detail: { message: `➕ Adding member to room...`, type: 'info' }
@@ -142,7 +206,7 @@ const AddRoomMember: React.FC<AddRoomMemberProps> = ({ conversation, onMemberAdd
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <input
           type="text"
-          placeholder="Enter wallet address (0x...)"
+          placeholder="Wallet address (0x...) or Inbox ID"
           value={memberAddress}
           onChange={(e) => setMemberAddress(e.target.value)}
           onKeyPress={(e) => {
@@ -163,25 +227,57 @@ const AddRoomMember: React.FC<AddRoomMemberProps> = ({ conversation, onMemberAdd
         </button>
       </div>
       <div style={{ fontSize: '11px', color: '#718096', marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '4px' }}>
-        <strong>Your wallet address:</strong>
-        <div style={{ marginTop: '4px', wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '10px' }}>
-          {walletAddress || 'Not connected'}
+        <div style={{ marginBottom: '8px' }}>
+          <strong>💡 Tip:</strong> You can enter either:
+          <ul style={{ margin: '4px 0 0 0', paddingLeft: '20px', fontSize: '10px' }}>
+            <li>Wallet address (0x...) - will try to resolve to inbox ID</li>
+            <li>Inbox ID directly - more reliable</li>
+          </ul>
         </div>
-        <button
-          onClick={() => {
-            if (walletAddress) {
-              navigator.clipboard.writeText(walletAddress);
-              window.dispatchEvent(new CustomEvent('app-log', {
-                detail: { message: '📋 Wallet address copied!', type: 'success' }
-              }));
-            }
-          }}
-          className="ghost-action tiny"
-          style={{ marginTop: '4px', padding: '4px 8px', fontSize: '10px' }}
-          disabled={!walletAddress}
-        >
-          📋 Copy Address
-        </button>
+        <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '8px' }}>
+          <strong>Your wallet address:</strong>
+          <div style={{ marginTop: '4px', wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '10px' }}>
+            {walletAddress || 'Not connected'}
+          </div>
+          {walletAddress && (
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(walletAddress);
+                window.dispatchEvent(new CustomEvent('app-log', {
+                  detail: { message: '📋 Wallet address copied!', type: 'success' }
+                }));
+              }}
+              className="ghost-action tiny"
+              style={{ marginTop: '4px', padding: '4px 8px', fontSize: '10px' }}
+            >
+              📋 Copy Address
+            </button>
+          )}
+          {xmtpClient?.inboxId && (
+            <>
+              <div style={{ marginTop: '8px', fontSize: '10px' }}>
+                <strong>Your inbox ID:</strong>
+                <div style={{ marginTop: '4px', wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '9px' }}>
+                  {xmtpClient.inboxId}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  if (xmtpClient.inboxId) {
+                    navigator.clipboard.writeText(xmtpClient.inboxId);
+                    window.dispatchEvent(new CustomEvent('app-log', {
+                      detail: { message: '📋 Inbox ID copied!', type: 'success' }
+                    }));
+                  }
+                }}
+                className="ghost-action tiny"
+                style={{ marginTop: '4px', padding: '4px 8px', fontSize: '10px' }}
+              >
+                📋 Copy Inbox ID
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

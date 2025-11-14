@@ -163,9 +163,7 @@ export const useConversations = () => {
           try {
             const content = typeof message.content === 'string' ? JSON.parse(message.content) : message.content;
             if (content && typeof content === 'object' && (content.type === 'call_offer' || content.type === 'call_answer' || content.type === 'call_response' || content.type === 'ice_candidate' || content.type === 'end_call')) {
-              // Handle call message separately
-              const { handleCallMessage } = await import('../hooks/useMessages');
-              // Call message handling will be done by useMessages hook
+              // Handle call message separately - useCallHandler will process it
               continue;
             }
           } catch (e) {

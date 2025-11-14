@@ -11,7 +11,7 @@ const StartDM: React.FC = () => {
   const [recipientInboxId, setRecipientInboxId] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const { createDM, loadConversations, selectConversation } = useConversations();
-  const { xmtpClient, conversations } = useAppStore();
+  const { xmtpClient } = useAppStore();
 
   const handleStartDM = async () => {
     if (!xmtpClient) {
@@ -41,13 +41,28 @@ const StartDM: React.FC = () => {
           return;
         }
 
+        window.dispatchEvent(new CustomEvent('app-log', {
+          detail: { message: `🔍 Looking up wallet address...`, type: 'info' }
+        }));
+
         // Try to get inbox ID from address
         let retries = 5;
         while (retries > 0 && !inboxId) {
           try {
             inboxId = await XmtpService.getInstance().getInboxIdByAddress(input);
-            if (inboxId) break;
-          } catch (e) {
+            if (inboxId) {
+              window.dispatchEvent(new CustomEvent('app-log', {
+                detail: { message: `✅ Found inbox ID for address`, type: 'success' }
+              }));
+              break;
+            }
+          } catch (e: any) {
+            const errorMsg = e?.message || String(e);
+            // If method doesn't exist, try workaround
+            if (errorMsg.includes('not a function') || errorMsg.includes('is not a function')) {
+              console.error('getInboxIdByAddress method not available, trying workaround:', e);
+              break; // Exit retry loop to try workaround
+            }
             console.log(`Retry ${6 - retries}/5...`);
           }
           if (!inboxId && retries > 1) {
@@ -56,14 +71,74 @@ const StartDM: React.FC = () => {
           retries--;
         }
 
+        // Workaround: Try creating DM directly with identifier if getInboxIdByAddress failed
+        if (!inboxId && xmtpClient) {
+          try {
+            window.dispatchEvent(new CustomEvent('app-log', {
+              detail: { message: `Trying alternative method...`, type: 'info' }
+            }));
+            
+            const identifier = {
+              identifier: input.toLowerCase(),
+              identifierKind: 'Ethereum' as const
+            };
+            
+            // Try to create DM with identifier directly
+            if ((xmtpClient as any).conversations?.newDm) {
+              try {
+                const tempDm = await (xmtpClient as any).conversations.newDm(identifier);
+                if (tempDm && tempDm.peerInboxId) {
+                  inboxId = tempDm.peerInboxId;
+                  window.dispatchEvent(new CustomEvent('app-log', {
+                    detail: { message: `✅ Got inbox ID via DM creation`, type: 'success' }
+                  }));
+                } else if (tempDm) {
+                  // If DM was created but no peerInboxId, try to get it from the conversation
+                  // In XMTP V3, a DM created with identifier should work
+                  // We can use the DM directly
+                  window.dispatchEvent(new CustomEvent('app-log', {
+                    detail: { message: `✅ DM created with address`, type: 'success' }
+                  }));
+                  
+                  // Clear inputs
+                  setRecipientAddress('');
+                  setRecipientInboxId('');
+                  
+                  // Select the conversation
+                  await loadConversations();
+                  const updatedConversations = useAppStore.getState().conversations;
+                  const idx = updatedConversations.findIndex((c: any) => c.id === tempDm.id);
+                  if (idx !== -1) {
+                    selectConversation(idx);
+                  }
+                  
+                  setIsCreating(false);
+                  return;
+                }
+              } catch (e: any) {
+                const errorMsg = e?.message || String(e);
+                if (errorMsg.includes('not registered') || errorMsg.includes('not found')) {
+                  window.dispatchEvent(new CustomEvent('app-log', {
+                    detail: { message: `Address not registered on XMTP`, type: 'warning' }
+                  }));
+                }
+              }
+            }
+          } catch (e) {
+            console.log('Workaround failed:', e);
+          }
+        }
+
         if (!inboxId) {
           alert('⚠️ Unable to locate an inbox for this address.\n\n' +
+                'The user may not be registered on XMTP yet.\n\n' +
                 '🔄 Try this:\n' +
-                '1. Ask your contact for their inbox ID (visible after they connect)\n' +
-                '2. Switch the selector above to "Inbox ID"\n' +
-                '3. Paste the full inbox ID\n' +
-                '4. Click "Start DM"\n\n' +
-                'This path is faster and more reliable on the dev network.');
+                '1. Ask your contact to connect their wallet to XMTP first\n' +
+                '2. Ask them for their inbox ID (visible after they connect)\n' +
+                '3. Switch the selector above to "Inbox ID"\n' +
+                '4. Paste the full inbox ID\n' +
+                '5. Click "Start DM"\n\n' +
+                'Using inbox ID is faster and more reliable.');
           setIsCreating(false);
           return;
         }
