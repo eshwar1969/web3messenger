@@ -18,7 +18,7 @@ import AddRoomMember from '../components/AddRoomMember';
 const ChatPage: React.FC = () => {
   const router = useRouter();
   const { isConnected } = useXmtp();
-  const { conversations, currentConversation, selectConversation, isLoading } = useConversations();
+  const { conversations, currentConversation, selectConversation, isLoading, loadConversations } = useConversations();
   const { messages, sendMessage } = useMessages();
   const { userProfile, xmtpClient, walletAddress } = useAppStore();
   const [messageInput, setMessageInput] = useState('');
@@ -26,8 +26,12 @@ const ChatPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showNewChat, setShowNewChat] = useState(false);
   const [showAddressModal, setShowAddressModal] = useState(false);
+  const [showMenuDropdown, setShowMenuDropdown] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameInput, setRenameInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const menuDropdownRef = useRef<HTMLDivElement>(null);
 
   // Handle calls
   useCallHandler();
@@ -38,6 +42,19 @@ const ChatPage: React.FC = () => {
       router.push('/connect');
     }
   }, [isConnected, router]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuDropdownRef.current && !menuDropdownRef.current.contains(event.target as Node)) {
+        setShowMenuDropdown(false);
+      }
+    };
+    if (showMenuDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showMenuDropdown]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -114,6 +131,101 @@ const ChatPage: React.FC = () => {
 
   const getInitials = (name: string) => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  };
+
+  // Calculate member count including current user - sync first to get latest data
+  const [memberCount, setMemberCount] = useState<number>(0);
+  
+  useEffect(() => {
+    const updateMemberCount = async () => {
+      if (!currentConversation || currentConversation.version === 'DM') {
+        setMemberCount(0);
+        return;
+      }
+      
+      try {
+        // Sync conversation to get latest member list
+        await currentConversation.sync();
+        const memberIds = currentConversation.memberInboxIds || [];
+        const currentUserInboxId = xmtpClient?.inboxId;
+        
+        // Check if current user is in the member list
+        const includesCurrentUser = currentUserInboxId && memberIds.includes(currentUserInboxId);
+        
+        // If current user is not in the list, add 1 to the count
+        const count = includesCurrentUser ? memberIds.length : memberIds.length + 1;
+        setMemberCount(count);
+      } catch (err) {
+        console.error('Error syncing conversation for member count:', err);
+        // Fallback to basic count
+        const memberIds = currentConversation.memberInboxIds || [];
+        const currentUserInboxId = xmtpClient?.inboxId;
+        const includesCurrentUser = currentUserInboxId && memberIds.includes(currentUserInboxId);
+        setMemberCount(includesCurrentUser ? memberIds.length : memberIds.length + 1);
+      }
+    };
+    
+    updateMemberCount();
+  }, [currentConversation, xmtpClient?.inboxId]);
+
+  const handleRenameRoom = () => {
+    if (!currentConversation) return;
+    
+    const currentName = ConversationService.getInstance().getConversationName(currentConversation.id);
+    setRenameInput(currentName || getConversationDisplayName(currentConversation));
+    setShowRenameModal(true);
+    setShowMenuDropdown(false);
+  };
+
+  const handleSaveRename = async () => {
+    if (!currentConversation) return;
+    
+    const newName = renameInput.trim();
+    
+    try {
+      if (newName) {
+        // Save locally
+        ConversationService.getInstance().setConversationName(currentConversation.id, newName);
+        
+        // Send room name change message to all members
+        const roomNameMessage = JSON.stringify({
+          type: 'room_name_change',
+          roomId: currentConversation.id,
+          roomName: newName,
+          timestamp: Date.now()
+        });
+        
+        await currentConversation.send(roomNameMessage);
+        
+        window.dispatchEvent(new CustomEvent('app-log', {
+          detail: { message: `✅ Room name updated and shared with members!`, type: 'success' }
+        }));
+      } else {
+        ConversationService.getInstance().removeConversationName(currentConversation.id);
+        
+        // Send room name removal message
+        const roomNameMessage = JSON.stringify({
+          type: 'room_name_change',
+          roomId: currentConversation.id,
+          roomName: null,
+          timestamp: Date.now()
+        });
+        
+        await currentConversation.send(roomNameMessage);
+        
+        window.dispatchEvent(new CustomEvent('app-log', {
+          detail: { message: `✅ Room name removed!`, type: 'success' }
+        }));
+      }
+      
+      setShowRenameModal(false);
+      setRenameInput('');
+      // Force re-render by reloading conversations
+      loadConversations();
+    } catch (error) {
+      console.error('Error saving room name:', error);
+      alert('Failed to save room name. Please try again.');
+    }
   };
 
   const filteredConversations = conversations.filter((conv: any) => {
@@ -256,14 +368,57 @@ const ChatPage: React.FC = () => {
                   <p>
                     {currentConversation.version === 'DM' 
                       ? 'Direct message' 
-                      : `${currentConversation.memberInboxIds?.length || 0} members`}
+                      : `${memberCount} members`}
                   </p>
                 </div>
               </div>
-              <div className="chat-header-actions">
+              <div className="chat-header-actions" style={{ position: 'relative' }}>
                 <button className="icon-btn" title="Voice call">📞</button>
                 <button className="icon-btn" title="Video call">📹</button>
-                <button className="icon-btn" title="More options">⋯</button>
+                <div ref={menuDropdownRef} style={{ position: 'relative' }}>
+                  <button 
+                    className="icon-btn" 
+                    title="More options"
+                    onClick={() => setShowMenuDropdown(!showMenuDropdown)}
+                  >
+                    ⋯
+                  </button>
+                  {showMenuDropdown && currentConversation.version !== 'DM' && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      right: 0,
+                      marginTop: '8px',
+                      background: 'white',
+                      borderRadius: '8px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                      minWidth: '180px',
+                      zIndex: 1000,
+                      border: '1px solid var(--border-color)'
+                    }}>
+                      <button
+                        onClick={handleRenameRoom}
+                        style={{
+                          width: '100%',
+                          padding: '12px 16px',
+                          border: 'none',
+                          background: 'transparent',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          color: 'var(--text-primary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--background-light)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                      >
+                        ✏️ Change Room Name
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
             
@@ -272,9 +427,19 @@ const ChatPage: React.FC = () => {
               <div style={{ padding: '0.75rem 1rem', background: 'var(--background-light)', borderBottom: '1px solid var(--border-color)' }}>
                 <AddRoomMember 
                   conversation={currentConversation}
-                  onMemberAdded={() => {
+                  onMemberAdded={async () => {
                     // Reload conversations to update member count
-                    loadConversations();
+                    await loadConversations();
+                    // Update member count by syncing
+                    try {
+                      await currentConversation.sync();
+                      const memberIds = currentConversation.memberInboxIds || [];
+                      const currentUserInboxId = xmtpClient?.inboxId;
+                      const includesCurrentUser = currentUserInboxId && memberIds.includes(currentUserInboxId);
+                      setMemberCount(includesCurrentUser ? memberIds.length : memberIds.length + 1);
+                    } catch (err) {
+                      console.error('Error updating member count:', err);
+                    }
                   }}
                 />
               </div>
@@ -288,58 +453,76 @@ const ChatPage: React.FC = () => {
                   <p>Start the conversation by sending a message</p>
                 </div>
               ) : (
-                messages.map((message: any, index: number) => {
-                  const isSent = message.senderInboxId === xmtpClient?.inboxId;
-                  
-                  // Handle system messages
-                  if (!message.content || typeof message.content !== 'string') {
-                    return (
-                      <div key={index} style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-                        System message
-                      </div>
-                    );
-                  }
-
-                  // Handle attachments
-                  try {
-                    const parsed = JSON.parse(message.content);
-                    if (parsed.type === 'attachment' && parsed.attachment) {
-                      const attachment = parsed.attachment;
-                      const downloadUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
-                      
+                messages
+                  .map((message: any, index: number) => {
+                    const isSent = message.senderInboxId === xmtpClient?.inboxId;
+                    
+                    // Handle system messages
+                    if (!message.content || typeof message.content !== 'string') {
                       return (
-                        <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
-                          <div className="message-bubble">
-                            <div className="message-content">
-                              📎 {FormatUtils.getInstance().escapeHtml(attachment.filename)}
-                            </div>
-                            <a href={downloadUrl} download={attachment.filename} style={{ color: 'var(--primary-green-dark)', textDecoration: 'none' }}>
-                              Download
-                            </a>
-                            <div className="message-time">
-                              {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
-                            </div>
-                          </div>
+                        <div key={index} style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+                          System message
                         </div>
                       );
                     }
-                  } catch (e) {
-                    // Not JSON, continue
-                  }
 
-                  // Regular message
-                  return (
-                    <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
-                      <div className="message-bubble">
-                        <div className="message-content">{message.content}</div>
-                        <div className="message-time">
-                          {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
-                          {isSent && <span className="message-status">✓</span>}
+                    // Handle special message types (attachments, room name changes, etc.)
+                    try {
+                      const parsed = JSON.parse(message.content);
+                      
+                      // Handle room name change messages - don't display, just process
+                      if (parsed.type === 'room_name_change' && parsed.roomId === currentConversation.id) {
+                        // Update local storage with the new room name
+                        if (parsed.roomName) {
+                          ConversationService.getInstance().setConversationName(parsed.roomId, parsed.roomName);
+                        } else {
+                          ConversationService.getInstance().removeConversationName(parsed.roomId);
+                        }
+                        // Reload conversations to reflect the change
+                        loadConversations();
+                        // Don't display this as a regular message, it's a system update
+                        return null;
+                      }
+                      
+                      // Handle attachments
+                      if (parsed.type === 'attachment' && parsed.attachment) {
+                        const attachment = parsed.attachment;
+                        const downloadUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
+                        
+                        return (
+                          <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
+                            <div className="message-bubble">
+                              <div className="message-content">
+                                📎 {FormatUtils.getInstance().escapeHtml(attachment.filename)}
+                              </div>
+                              <a href={downloadUrl} download={attachment.filename} style={{ color: 'var(--primary-green-dark)', textDecoration: 'none' }}>
+                                Download
+                              </a>
+                              <div className="message-time">
+                                {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+                    } catch (e) {
+                      // Not JSON, continue
+                    }
+
+                    // Regular message
+                    return (
+                      <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
+                        <div className="message-bubble">
+                          <div className="message-content">{message.content}</div>
+                          <div className="message-time">
+                            {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                            {isSent && <span className="message-status">✓</span>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
+                    );
+                  })
+                  .filter((msg: any) => msg !== null) // Filter out null returns from room name change messages
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -523,6 +706,97 @@ const ChatPage: React.FC = () => {
             >
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Room Modal */}
+      {showRenameModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1001
+          }}
+          onClick={() => setShowRenameModal(false)}
+        >
+          <div 
+            style={{
+              background: 'white',
+              padding: '24px',
+              borderRadius: '12px',
+              maxWidth: '400px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: '600' }}>
+              Change Room Name
+            </h3>
+            <input
+              type="text"
+              value={renameInput}
+              onChange={(e) => setRenameInput(e.target.value)}
+              placeholder="Enter room name"
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: '14px',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                marginBottom: '16px',
+                boxSizing: 'border-box'
+              }}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  handleSaveRename();
+                }
+              }}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setShowRenameModal(false);
+                  setRenameInput('');
+                }}
+                style={{
+                  padding: '10px 20px',
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  color: 'var(--text-secondary)'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveRename}
+                style={{
+                  padding: '10px 20px',
+                  background: '#667eea',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  color: 'white'
+                }}
+              >
+                Save
+              </button>
+            </div>
           </div>
         </div>
       )}

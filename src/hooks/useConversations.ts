@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { XmtpService } from '../services/xmtp.service';
+import { ConversationService } from '../services/conversation.service';
 
 export const useConversations = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -159,15 +160,30 @@ export const useConversations = () => {
         for await (const message of stream) {
           console.log('New message received!');
           
-          // Check if it's a call message (don't add to regular messages)
+          // Check if it's a special message type (call, room name change, etc.)
           try {
             const content = typeof message.content === 'string' ? JSON.parse(message.content) : message.content;
-            if (content && typeof content === 'object' && (content.type === 'call_offer' || content.type === 'call_answer' || content.type === 'call_response' || content.type === 'ice_candidate' || content.type === 'end_call')) {
-              // Handle call message separately - useCallHandler will process it
-              continue;
+            if (content && typeof content === 'object') {
+              // Handle call messages separately - useCallHandler will process it
+              if (content.type === 'call_offer' || content.type === 'call_answer' || content.type === 'call_response' || content.type === 'ice_candidate' || content.type === 'end_call') {
+                continue;
+              }
+              
+              // Handle room name change messages
+              if (content.type === 'room_name_change' && content.roomId) {
+                if (content.roomName) {
+                  ConversationService.getInstance().setConversationName(content.roomId, content.roomName);
+                } else {
+                  ConversationService.getInstance().removeConversationName(content.roomId);
+                }
+                // Reload conversations to reflect the change
+                await loadConversations();
+                // Don't add to regular messages
+                continue;
+              }
             }
           } catch (e) {
-            // Not a call message, continue
+            // Not a special message, continue
           }
           
           // Dispatch log event
