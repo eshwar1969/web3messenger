@@ -1,21 +1,31 @@
 {
   "name": "xmtp-v3-demo",
   "version": "1.0.0",
-  "type": "module",
-  "description": "XMTP V3 messaging demo con Ethers v6",
+  "description": "XMTP V3 messaging demo with Next.js and Ethers v6",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
   },
   "dependencies": {
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
     "@xmtp/browser-sdk": "^4.0.0",
     "ethers": "^6.15.0",
     "ipfs-http-client": "^60.0.1",
+    "next": "^15.0.0",
     "openai": "^6.8.1",
-    "web3": "^4.16.0"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "web3": "^4.16.0",
+    "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "vite": "^5.4.0"
+    "@types/node": "^24.10.1",
+    "eslint": "9.39.1",
+    "eslint-config-next": "16.0.3",
+    "typescript": "^5.9.3"
   }
 }

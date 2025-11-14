@@ -28,6 +28,7 @@ let isOnline = navigator.onLine;
 let currentCall = null;
 let callState = 'idle'; // idle, calling, ringing, connected, ended
 let currentCallType = null; // 'voice' or 'video'
+let callAccepted = false;
 
 const STORAGE_KEYS = {
     profile: 'xmtpUserProfile',
@@ -967,6 +968,9 @@ function updateCallUI(inCall, callType = null, status = null) {
 
 // Handle incoming call messages
 async function handleCallMessage(message) {
+    // Ignore our own messages
+    if (message.senderInboxId === xmtpClient.inboxId) return;
+
     try {
         const callData = JSON.parse(message.content);
 
