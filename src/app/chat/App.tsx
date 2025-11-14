@@ -99,23 +99,25 @@ const App: React.FC = () => {
         {shouldShowChatView && (
           <section id="chatView" className="chat-view">
             <aside className="chat-sidebar">
-              <div className="sidebar-card highlight">
-                <h2>Your wallet</h2>
-                <WalletInfo />
-                <div className="info-box">
-                  💡 XMTP V3 + MetaMask keeps your real identity under your control.
-                </div>
+              {/* Enhanced Profile Display */}
+              <div className="sidebar-card">
+                <WalletConnect />
               </div>
 
-              <FriendDirectory />
+              {/* DM Creation Panel */}
+              <div className="sidebar-card">
+                <StartDM />
+              </div>
 
+              {/* Friend Directory and Room Management */}
+              <FriendDirectory />
               <CreateRoom />
               <JoinRoom />
 
+              {/* Conversations List */}
               <div className="sidebar-card">
-                <StartDM />
                 <div className="card-header conversations">
-                  <h2>Inbox</h2>
+                  <h2>📬 Inbox</h2>
                   <span className="card-subtitle">Live conversations</span>
                 </div>
                 <ConversationList />

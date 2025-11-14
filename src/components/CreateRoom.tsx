@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useConversations } from '../hooks/useConversations';
 import { useAppStore } from '../store/useAppStore';
 import { XmtpService } from '../services/xmtp.service';
+import { ConversationService } from '../services/conversation.service';
 
 const CreateRoom: React.FC = () => {
   const [roomName, setRoomName] = useState('');
@@ -31,10 +32,15 @@ const CreateRoom: React.FC = () => {
       // Start with empty array - creator is automatically added
       const room = await XmtpService.getInstance().createGroup([]);
       
+      // Assign room number
+      const roomNumber = ConversationService.getInstance().assignRoomNumber(room.id);
+      const roomDisplayName = roomName.trim() || `Room ${roomNumber}`;
+      
+      // Set the room name
+      ConversationService.getInstance().setConversationName(room.id, roomDisplayName);
+      
       // Send room info as first message
-      const roomInfoMessage = roomName.trim() 
-        ? `🏠 Room: ${roomName.trim()}\n\nRoom ID: ${room.id}\n\nShare this Room ID with others. They'll need to share their wallet address with you to be added.`
-        : `🏠 Room created!\n\nRoom ID: ${room.id}\n\nShare this Room ID with others. They'll need to share their wallet address with you to be added.`;
+      const roomInfoMessage = `🏠 ${roomDisplayName}\n\nRoom ID: ${room.id}\n\nShare this Room ID with others. They'll need to share their inbox ID with you to be added.`;
       
       try {
         await room.send(roomInfoMessage);

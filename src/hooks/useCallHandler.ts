@@ -5,16 +5,38 @@ import { WebRTCService } from '../services/webrtc.service';
 export const useCallHandler = () => {
   const { currentConversation, messages, callState } = useAppStore();
   const processedMessages = useRef<Set<string>>(new Set());
+  const lastMessageCount = useRef<number>(0);
+  const currentConversationId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!currentConversation || !messages.length) return;
+    if (!currentConversation || !messages.length) {
+      lastMessageCount.current = 0;
+      currentConversationId.current = null;
+      return;
+    }
+
+    // Reset processed messages when conversation changes
+    if (currentConversationId.current !== currentConversation.id) {
+      processedMessages.current.clear();
+      currentConversationId.current = currentConversation.id;
+      lastMessageCount.current = messages.length;
+      return; // Don't process old messages when switching conversations
+    }
+
+    // Only process NEW messages (messages that weren't there before)
+    const newMessages = messages.slice(lastMessageCount.current);
+    lastMessageCount.current = messages.length;
+
+    if (newMessages.length === 0) return;
 
     const handleIncomingCall = async (message: any) => {
       const xmtpClient = useAppStore.getState().xmtpClient;
+      
+      // Ignore messages from self
       if (message.senderInboxId === xmtpClient?.inboxId) return;
 
       // Create unique ID for message to avoid processing twice
-      const messageId = `${message.sentAtNs}-${message.senderInboxId}`;
+      const messageId = `${message.sentAtNs}-${message.senderInboxId}-${currentConversation.id}`;
       if (processedMessages.current.has(messageId)) return;
       processedMessages.current.add(messageId);
 
@@ -23,7 +45,19 @@ export const useCallHandler = () => {
         
         if (!callData || typeof callData !== 'object' || !callData.type) return;
 
+        // Only process call offers that are recent (within last 5 minutes)
+        // This prevents old call messages from triggering popups
         if (callData.type === 'call_offer') {
+          const messageTimestamp = Number(message.sentAtNs) / 1000000; // Convert nanoseconds to milliseconds
+          const now = Date.now();
+          const messageAge = now - messageTimestamp;
+          
+          // Ignore call offers older than 5 minutes
+          if (messageAge > 5 * 60 * 1000) {
+            console.log('Ignoring old call offer:', messageAge / 1000, 'seconds old');
+            return;
+          }
+
           const currentCallState = useAppStore.getState().callState;
           if (currentCallState.state !== 'idle') {
             await WebRTCService.getInstance().sendCallResponse('busy');
@@ -88,8 +122,8 @@ export const useCallHandler = () => {
       }
     };
 
-    // Check latest messages for call messages
-    messages.forEach((message: any) => {
+    // Only process NEW messages for call messages
+    newMessages.forEach((message: any) => {
       if (typeof message.content === 'string') {
         try {
           const parsed = JSON.parse(message.content);

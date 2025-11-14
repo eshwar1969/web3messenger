@@ -12,7 +12,8 @@ import { FileService } from '../services/file.service';
 import { WebRTCService } from '../services/webrtc.service';
 import { useCallHandler } from '../hooks/useCallHandler';
 import CallControls from '../components/CallControls';
-import StartDMCompact from '../components/StartDMCompact';
+import NewChatPanel from '../components/NewChatPanel';
+import AddRoomMember from '../components/AddRoomMember';
 
 const ChatPage: React.FC = () => {
   const router = useRouter();
@@ -24,6 +25,7 @@ const ChatPage: React.FC = () => {
   const [isSending, setIsSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showNewChat, setShowNewChat] = useState(false);
+  const [showAddressModal, setShowAddressModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -48,6 +50,13 @@ const ChatPage: React.FC = () => {
     const names = ConversationService.getInstance().getAllNames();
     setConversationNames(names);
   }, [conversations]);
+
+  // Listen for close event from StartDMCompact
+  useEffect(() => {
+    const handleClose = () => setShowNewChat(false);
+    window.addEventListener('close-new-chat', handleClose);
+    return () => window.removeEventListener('close-new-chat', handleClose);
+  }, []);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,7 +100,16 @@ const ChatPage: React.FC = () => {
     if (conv.version === 'DM' && conv.peerInboxId) {
       return FormatUtils.getInstance().formatInboxId(conv.peerInboxId);
     }
-    return `Room (${conv.memberInboxIds?.length || 0} members)`;
+    
+    // For rooms, assign number if not already assigned
+    const roomNumber = ConversationService.getInstance().getRoomNumber(conv.id);
+    if (roomNumber) {
+      return `Room ${roomNumber}`;
+    } else {
+      // Assign number for existing rooms without numbers
+      const number = ConversationService.getInstance().assignRoomNumber(conv.id);
+      return `Room ${number}`;
+    }
   };
 
   const getInitials = (name: string) => {
@@ -114,7 +132,12 @@ const ChatPage: React.FC = () => {
       <div className="messenger-sidebar">
         <div className="sidebar-header">
           <div className="sidebar-header-left">
-            <div className="user-avatar">
+            <div 
+              className="user-avatar" 
+              onClick={() => setShowAddressModal(true)}
+              style={{ cursor: 'pointer' }}
+              title="Click to view wallet address"
+            >
               {userProfile.profilePicture ? (
                 <img src={userProfile.profilePicture} alt="Profile" />
               ) : (
@@ -141,17 +164,7 @@ const ChatPage: React.FC = () => {
         </div>
 
         {showNewChat && (
-          <div style={{ padding: '1rem', background: 'var(--background-light)', borderBottom: '1px solid var(--border-color)' }}>
-            <h3 style={{ fontSize: '0.9375rem', fontWeight: 600, marginBottom: '0.75rem' }}>New Chat</h3>
-            <StartDMCompact />
-            <button 
-              className="btn btn-secondary" 
-              onClick={() => setShowNewChat(false)}
-              style={{ marginTop: '0.5rem', width: '100%', padding: '0.625rem', fontSize: '0.875rem' }}
-            >
-              Close
-            </button>
-          </div>
+          <NewChatPanel onClose={() => setShowNewChat(false)} />
         )}
 
         <div className="search-container">
@@ -248,26 +261,24 @@ const ChatPage: React.FC = () => {
                 </div>
               </div>
               <div className="chat-header-actions">
-                {currentConversation.version !== 'DM' && (
-                  <button 
-                    className="icon-btn" 
-                    title="Add member"
-                    onClick={() => {
-                      const address = prompt('Enter wallet address or inbox ID to add:');
-                      if (address) {
-                        // Simple add member - could be enhanced later
-                        alert('Add member feature - use the AddRoomMember component in sidebar');
-                      }
-                    }}
-                  >
-                    ➕
-                  </button>
-                )}
                 <button className="icon-btn" title="Voice call">📞</button>
                 <button className="icon-btn" title="Video call">📹</button>
                 <button className="icon-btn" title="More options">⋯</button>
               </div>
             </div>
+            
+            {/* Add Member Section for Rooms */}
+            {currentConversation.version !== 'DM' && (
+              <div style={{ padding: '0.75rem 1rem', background: 'var(--background-light)', borderBottom: '1px solid var(--border-color)' }}>
+                <AddRoomMember 
+                  conversation={currentConversation}
+                  onMemberAdded={() => {
+                    // Reload conversations to update member count
+                    loadConversations();
+                  }}
+                />
+              </div>
+            )}
 
             <div className="chat-messages">
               {messages.length === 0 ? (
@@ -378,6 +389,143 @@ const ChatPage: React.FC = () => {
           </>
         )}
       </div>
+
+      {/* Profile Info Modal */}
+      {showAddressModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowAddressModal(false)}
+        >
+          <div 
+            style={{
+              background: 'white',
+              padding: '24px',
+              borderRadius: '12px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', fontWeight: '600' }}>Your Info</h3>
+            
+            {/* Inbox ID Section */}
+            {xmtpClient?.inboxId && (
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px', color: 'var(--text-primary)' }}>
+                  📬 Your Inbox ID
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <p style={{ 
+                    margin: '0', 
+                    fontSize: '13px', 
+                    wordBreak: 'break-all', 
+                    fontFamily: 'monospace', 
+                    background: '#f8fafc', 
+                    padding: '12px', 
+                    borderRadius: '8px', 
+                    border: '1px solid #e2e8f0', 
+                    flex: 1 
+                  }}>
+                    {xmtpClient.inboxId}
+                  </p>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(xmtpClient.inboxId);
+                      window.dispatchEvent(new CustomEvent('app-log', {
+                        detail: { message: '📋 Inbox ID copied!', type: 'success' }
+                      }));
+                      alert('Inbox ID copied to clipboard!');
+                    }}
+                    className="ghost-action"
+                    style={{ padding: '10px 20px', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: '600' }}
+                    title="Copy inbox ID"
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+                <div style={{ 
+                  fontSize: '0.75rem', 
+                  color: 'var(--text-secondary)', 
+                  marginTop: '0.5rem',
+                  padding: '0.5rem',
+                  background: '#f0f7ff',
+                  borderRadius: '6px',
+                  border: '1px solid #dbeafe'
+                }}>
+                  💡 Share this with others so they can add you to rooms or start DMs
+                </div>
+              </div>
+            )}
+            
+            {/* Wallet Address Section */}
+            {walletAddress && (
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                  🔑 Your Wallet Address
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <p style={{ 
+                    margin: '0', 
+                    fontSize: '13px', 
+                    wordBreak: 'break-all', 
+                    fontFamily: 'monospace', 
+                    background: '#f8fafc', 
+                    padding: '12px', 
+                    borderRadius: '8px', 
+                    border: '1px solid #e2e8f0', 
+                    flex: 1 
+                  }}>
+                    {walletAddress}
+                  </p>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(walletAddress);
+                      window.dispatchEvent(new CustomEvent('app-log', {
+                        detail: { message: '📋 Wallet address copied!', type: 'success' }
+                      }));
+                      alert('Wallet address copied to clipboard!');
+                    }}
+                    className="ghost-action"
+                    style={{ padding: '10px 20px', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: '600' }}
+                    title="Copy wallet address"
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            <button
+              onClick={() => setShowAddressModal(false)}
+              style={{ 
+                width: '100%', 
+                padding: '10px', 
+                background: '#667eea', 
+                color: 'white', 
+                border: 'none', 
+                borderRadius: '8px', 
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '600'
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

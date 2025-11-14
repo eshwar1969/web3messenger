@@ -89,6 +89,7 @@ const WalletInfo: React.FC = () => {
   };
 
   const hasName = Boolean(userProfile.username);
+  const [showAddressModal, setShowAddressModal] = useState(false);
 
   // Always show if we have wallet address OR xmtpClient (even if address is missing from store)
   // This ensures the component renders as soon as wallet is connected
@@ -98,6 +99,16 @@ const WalletInfo: React.FC = () => {
     console.log('WalletInfo: Not rendering - no address or client');
     return null;
   }
+
+  const handleCopyAddress = () => {
+    if (finalWalletAddress) {
+      navigator.clipboard.writeText(finalWalletAddress);
+      window.dispatchEvent(new CustomEvent('app-log', {
+        detail: { message: '📋 Wallet address copied!', type: 'success' }
+      }));
+      alert('Wallet address copied to clipboard!');
+    }
+  };
 
   return (
     <>
@@ -115,10 +126,17 @@ const WalletInfo: React.FC = () => {
               <img
                 src={userProfile.profilePicture}
                 alt="Profile Picture"
-                style={{ width: '60px', height: '60px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #cbd5e0' }}
+                onClick={() => setShowAddressModal(true)}
+                style={{ width: '60px', height: '60px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #cbd5e0', cursor: 'pointer' }}
+                title="Click to view wallet address"
               />
             ) : (
-              <div className="profile-picture-placeholder" style={{ width: '60px', height: '60px', borderRadius: '50%', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', border: '2px solid #cbd5e0' }}>👤</div>
+              <div 
+                className="profile-picture-placeholder" 
+                onClick={() => setShowAddressModal(true)}
+                style={{ width: '60px', height: '60px', borderRadius: '50%', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', border: '2px solid #cbd5e0', cursor: 'pointer' }}
+                title="Click to view wallet address"
+              >👤</div>
             )}
             <div>
               <input
@@ -138,6 +156,80 @@ const WalletInfo: React.FC = () => {
             </div>
           </div>
         </div>
+        
+        {/* Wallet Address Modal */}
+        {showAddressModal && (
+          <div 
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000
+            }}
+            onClick={() => setShowAddressModal(false)}
+          >
+            <div 
+              style={{
+                background: 'white',
+                padding: '24px',
+                borderRadius: '12px',
+                maxWidth: '500px',
+                width: '90%',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: '600' }}>🔑 Your Wallet Address</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                <p style={{ 
+                  margin: '0', 
+                  fontSize: '14px', 
+                  wordBreak: 'break-all', 
+                  fontFamily: 'monospace', 
+                  background: '#f8fafc', 
+                  padding: '12px', 
+                  borderRadius: '8px', 
+                  border: '1px solid #e2e8f0', 
+                  flex: 1 
+                }}>
+                  {finalWalletAddress || 'Not available'}
+                </p>
+                {finalWalletAddress && (
+                  <button
+                    onClick={handleCopyAddress}
+                    className="ghost-action"
+                    style={{ padding: '10px 20px', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: '600' }}
+                    title="Copy wallet address"
+                  >
+                    📋 Copy
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={() => setShowAddressModal(false)}
+                style={{ 
+                  width: '100%', 
+                  padding: '10px', 
+                  background: '#667eea', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '8px', 
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '600'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
         <div className="wallet-line">
           <div>
             <p><strong>🙋 Display name</strong></p>
@@ -148,23 +240,27 @@ const WalletInfo: React.FC = () => {
         </div>
         <div style={{ padding: '12px', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #86efac', marginBottom: '12px' }}>
           <p style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: '#166534' }}><strong>🔑 Your Wallet Address</strong></p>
-          <p style={{ margin: '0 0 8px 0', fontSize: '13px', wordBreak: 'break-all', fontFamily: 'monospace', background: '#fff', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e0' }}>
-            {finalWalletAddress || 'Not available'}
-          </p>
-          {finalWalletAddress && (
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(finalWalletAddress);
-                window.dispatchEvent(new CustomEvent('app-log', {
-                  detail: { message: '📋 Wallet address copied!', type: 'success' }
-                }));
-              }}
-              className="ghost-action tiny"
-              style={{ padding: '4px 8px', fontSize: '11px' }}
-            >
-              📋 Copy Address
-            </button>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <p style={{ margin: '0', fontSize: '13px', wordBreak: 'break-all', fontFamily: 'monospace', background: '#fff', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e0', flex: 1 }}>
+              {finalWalletAddress || 'Not available'}
+            </p>
+            {finalWalletAddress && (
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(finalWalletAddress);
+                  window.dispatchEvent(new CustomEvent('app-log', {
+                    detail: { message: '📋 Wallet address copied!', type: 'success' }
+                  }));
+                  alert('Wallet address copied to clipboard!');
+                }}
+                className="ghost-action"
+                style={{ padding: '8px 16px', fontSize: '13px', whiteSpace: 'nowrap', fontWeight: '600' }}
+                title="Copy wallet address"
+              >
+                📋 Copy
+              </button>
+            )}
+          </div>
         </div>
         <p><strong>🦊 Wallet:</strong> MetaMask</p>
         {xmtpClient && xmtpClient.inboxId ? (
