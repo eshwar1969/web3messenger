@@ -13,6 +13,16 @@ export const useMessages = () => {
     }
 
     try {
+      // CRITICAL: Sync conversation before sending to ensure it's properly initialized
+      // This is especially important for DMs to ensure the receiver can see messages
+      try {
+        await currentConversation.sync();
+        console.log('✅ Conversation synced before sending message');
+      } catch (syncError) {
+        console.warn('Could not sync conversation before sending:', syncError);
+        // Continue anyway - message might still send
+      }
+
       await currentConversation.send(content);
       console.log('Message sent successfully');
       

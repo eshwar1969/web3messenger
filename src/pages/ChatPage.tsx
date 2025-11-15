@@ -16,6 +16,7 @@ import CallControls from '../components/CallControls';
 import NewChatPanel from '../components/NewChatPanel';
 import AddRoomMember from '../components/AddRoomMember';
 import { BrowserProvider } from 'ethers';
+import { NotificationService } from '../services/notification.service';
 
 // Voice Player Component
 const VoicePlayer: React.FC<{ audioUrl: string }> = ({ audioUrl }) => {
@@ -96,6 +97,40 @@ const ChatPage: React.FC = () => {
   const { conversations, currentConversation, selectConversation, isLoading, loadConversations } = useConversations();
   const { messages, sendMessage } = useMessages();
   const { userProfile, xmtpClient, walletAddress } = useAppStore();
+
+  // Request notification permission on mount
+  useEffect(() => {
+    if (isConnected) {
+      NotificationService.getInstance().requestPermission();
+    }
+  }, [isConnected]);
+
+  // Update notification service when conversation changes
+  useEffect(() => {
+    if (currentConversation) {
+      NotificationService.getInstance().setCurrentConversation(currentConversation.id);
+    } else {
+      NotificationService.getInstance().setCurrentConversation(null);
+    }
+  }, [currentConversation]);
+
+  // Handle notification clicks
+  useEffect(() => {
+    const handleNotificationClick = (event: CustomEvent) => {
+      const { conversationId } = event.detail;
+      if (conversationId) {
+        const idx = conversations.findIndex((c: any) => c.id === conversationId);
+        if (idx !== -1) {
+          selectConversation(idx);
+        }
+      }
+    };
+
+    window.addEventListener('notification-click', handleNotificationClick as EventListener);
+    return () => {
+      window.removeEventListener('notification-click', handleNotificationClick as EventListener);
+    };
+  }, [conversations, selectConversation]);
   const [messageInput, setMessageInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
