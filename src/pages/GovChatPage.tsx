@@ -5,9 +5,10 @@ import { useRouter } from 'next/navigation';
 import { ethers } from 'ethers';
 import { PrivateXmtpService } from '../services/private-xmtp.service';
 import { NftVerificationService, TokenGate } from '../services/nft-verification.service';
-import { PushToTalkService } from '../services/push-to-talk.service';
+import { WalkieTalkieService } from '../services/walkie-talkie.service';
 import { FormatUtils } from '../utils/format';
-import PushToTalkButton from '../components/PushToTalkButton';
+import WalkieTalkieButton from '../components/WalkieTalkieButton';
+import AddChannelMember from '../components/AddChannelMember';
 import { useAppStore } from '../store/useAppStore';
 
 const GovChatPage: React.FC = () => {
@@ -29,7 +30,7 @@ const GovChatPage: React.FC = () => {
   const initializationRef = useRef<boolean>(false);
   const privateXmtpService = PrivateXmtpService.getInstance();
   const nftService = NftVerificationService.getInstance();
-  const pttService = PushToTalkService.getInstance();
+  const wtService = WalkieTalkieService.getInstance();
 
   // Check authentication on mount
   useEffect(() => {
@@ -77,7 +78,6 @@ const GovChatPage: React.FC = () => {
         
         setXmtpClient(client);
         setWalletAddress(address);
-        pttService.setXmtpClient(client);
 
         // Load conversations
         await loadConversations(client);
@@ -290,9 +290,9 @@ const GovChatPage: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
-  // Stream messages
+  // Stream messages and handle walkie-talkie messages
   useEffect(() => {
-    if (!currentConversation) return;
+    if (!currentConversation || !useAppStore.getState().xmtpClient) return;
 
     const streamMessages = async () => {
       try {
@@ -301,6 +301,23 @@ const GovChatPage: React.FC = () => {
         
         for await (const message of stream) {
           console.log('New message received!');
+          
+          // Check if it's a walkie-talkie message
+          try {
+            const data = typeof message.content === 'string' 
+              ? JSON.parse(message.content) 
+              : message.content;
+            
+            if (data && typeof data === 'object' && data.type && data.type.startsWith('walkie_talkie_')) {
+              // Handle walkie-talkie WebRTC signaling
+              await wtService.handleMessage(message);
+              // Don't add walkie-talkie signaling messages to chat
+              continue;
+            }
+          } catch (e) {
+            // Not a walkie-talkie message, continue
+          }
+          
           setMessages(prev => {
             // Deduplicate
             if (prev.some(m => m.id === message.id)) return prev;
@@ -444,69 +461,134 @@ const GovChatPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="chat-messages">
-              {messages.map((message, index) => {
-                const isSent = message.senderInboxId === useAppStore.getState().xmtpClient?.inboxId;
-                const senderName = isSent ? 'YOU' : 'PEER';
-                
-                // Check if it's a push-to-talk or voice message
-                try {
-                  const parsed = JSON.parse(message.content);
+            {/* Add Member Section */}
+            <div style={{ padding: '0.75rem 1rem', background: 'var(--background-light)', borderBottom: '1px solid var(--border-color)' }}>
+              <AddChannelMember 
+                conversation={currentConversation}
+                onMemberAdded={async () => {
+                  // Reload conversations to update member list
+                  const client = privateXmtpService.getClient();
+                  if (client) {
+                    await loadConversations(client);
+                  }
+                  // Sync current conversation
+                  try {
+                    await currentConversation.sync();
+                  } catch (e) {
+                    console.log('Sync error (non-critical):', e);
+                  }
                   
-                  // Handle attachments (voice messages and push-to-talk)
-                  if (parsed.type === 'attachment' && parsed.attachment) {
-                    const attachment = parsed.attachment;
-                    const audioUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
+                  // Refresh walkie-talkie service with updated member list
+                  // This ensures new members can hear broadcasts and can broadcast themselves
+                  try {
+                    const xmtpClient = useAppStore.getState().xmtpClient;
+                    if (xmtpClient && currentConversation) {
+                      // Refresh members in the walkie-talkie service
+                      await wtService.refreshMembers();
+                      console.log('Walkie-talkie service refreshed with updated members');
+                    }
+                  } catch (e) {
+                    console.log('Walkie-talkie refresh error (non-critical):', e);
+                  }
+                }}
+              />
+            </div>
+
+            <div className="chat-messages">
+              {messages
+                .filter((message) => {
+                  // Filter out system messages and non-string content
+                  // System messages have object content with keys like initiatedByInboxId, addedInboxes, etc.
+                  if (!message.content || typeof message.content !== 'string') {
+                    return false; // Don't render system messages
+                  }
+                  return true;
+                })
+                .map((message, index) => {
+                  const isSent = message.senderInboxId === useAppStore.getState().xmtpClient?.inboxId;
+                  const senderName = isSent ? 'YOU' : 'PEER';
+                  
+                  // Check if it's a push-to-talk or voice message
+                  try {
+                    const parsed = JSON.parse(message.content);
                     
-                    // Check if it's an audio attachment
-                    if (attachment.type === 'voice_message' || attachment.mimeType?.startsWith('audio/')) {
-                      return (
-                        <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
-                          <div className="message-bubble">
-                            <div className="message-header">
-                              <span>{senderName}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                              <audio controls src={audioUrl} style={{ maxWidth: '200px' }} />
-                              <span style={{ fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.9)' }}>
-                                📻 Push-to-Talk
-                              </span>
-                            </div>
-                            <div className="message-time">
-                              {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                    // Handle attachments (voice messages and push-to-talk)
+                    if (parsed.type === 'attachment' && parsed.attachment) {
+                      const attachment = parsed.attachment;
+                      const audioUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
+                      
+                      // Check if it's an audio attachment
+                      if (attachment.type === 'voice_message' || attachment.mimeType?.startsWith('audio/')) {
+                        return (
+                          <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
+                            <div className="message-bubble">
+                              <div className="message-header">
+                                <span>{senderName}</span>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <audio controls src={audioUrl} style={{ maxWidth: '200px' }} />
+                                <span style={{ fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.9)' }}>
+                                  📻 Push-to-Talk
+                                </span>
+                              </div>
+                              <div className="message-time">
+                                {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      );
+                        );
+                      }
                     }
+                    
+                    // Handle channel info messages
+                    if (parsed.type === 'channel_info') {
+                      return null; // Don't render channel info messages
+                    }
+                  } catch (e) {
+                    // Not JSON, continue to render as regular message
                   }
-                } catch (e) {
-                  // Not JSON, continue
-                }
 
-                return (
-                  <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
-                    <div className="message-bubble">
-                      <div className="message-header">
-                        <span>{senderName}</span>
-                      </div>
-                      <div className="message-content">{message.content}</div>
-                      <div className="message-time">
-                        {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                  // Regular text message
+                  return (
+                    <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
+                      <div className="message-bubble">
+                        <div className="message-header">
+                          <span>{senderName}</span>
+                        </div>
+                        <div className="message-content">
+                          {typeof message.content === 'string' 
+                            ? FormatUtils.getInstance().escapeHtml(message.content)
+                            : 'System message'}
+                        </div>
+                        <div className="message-time">
+                          {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+                .filter(msg => msg !== null) // Remove null returns
+              }
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Push-to-Talk Button */}
+            {/* Real-time Walkie-Talkie Button */}
             <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)' }}>
-              <PushToTalkButton 
+              <WalkieTalkieButton 
                 conversation={currentConversation} 
                 xmtpClient={useAppStore.getState().xmtpClient}
               />
+              <div style={{
+                marginTop: '0.75rem',
+                padding: '0.5rem',
+                background: 'rgba(59, 130, 246, 0.1)',
+                borderRadius: '6px',
+                fontSize: '0.7rem',
+                color: '#93c5fd',
+                textAlign: 'center'
+              }}>
+                📻 Real-time walkie-talkie: All channel members will hear when you push to talk
+              </div>
             </div>
 
             {/* Message Input */}

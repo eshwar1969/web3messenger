@@ -372,8 +372,13 @@ const ChatPage: React.FC = () => {
   const getConversationDisplayName = (conv: any) => {
     if (!conv) return 'Unknown';
     
-    // Check if it's a DM first (using our reliable detection)
-    if (isDMConversation(conv)) {
+    // CRITICAL: Check localStorage first - this is the most reliable way to detect DMs
+    // This ensures that even if the conversation object doesn't have DM properties,
+    // we still correctly identify it as a DM
+    const isStoredDM = ConversationService.getInstance().isDM(conv.id);
+    
+    // Check if it's a DM (using our reliable detection)
+    if (isStoredDM || isDMConversation(conv)) {
       // For DMs, show "DM" as the title - it's a one-on-one private chat
       // Optionally show wallet address if available for easier identification
       const peerInboxId = conv.peerInboxId || 
