@@ -476,7 +476,20 @@ const ChatPage: React.FC = () => {
   
   useEffect(() => {
     const updateMemberCount = async () => {
-      if (!currentConversation || isDMConversation(currentConversation)) {
+      if (!currentConversation) {
+        setMemberCount(0);
+        return;
+      }
+      
+      // Check if it's a DM - use the same logic as isDMConversation but inline
+      const isStoredDM = ConversationService.getInstance().isDM(currentConversation.id);
+      const isDM = isStoredDM || 
+        currentConversation.version === 'DM' || 
+        currentConversation.peerInboxId ||
+        (currentConversation.memberInboxIds?.length === 1 && !currentConversation.memberInboxIds.includes(xmtpClient?.inboxId || '')) ||
+        (currentConversation.memberInboxIds?.length === 2 && currentConversation.memberInboxIds.includes(xmtpClient?.inboxId || ''));
+      
+      if (isDM) {
         setMemberCount(0);
         return;
       }
@@ -504,7 +517,7 @@ const ChatPage: React.FC = () => {
     };
     
     updateMemberCount();
-  }, [currentConversation, xmtpClient?.inboxId, isDMConversation]);
+  }, [currentConversation, xmtpClient?.inboxId]);
 
   const handleRenameRoom = () => {
     if (!currentConversation) return;
