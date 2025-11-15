@@ -109,7 +109,21 @@ const GovChatPage: React.FC = () => {
   const loadConversations = async (client: any) => {
     try {
       const convs = await client.conversations.list();
-      setConversations(convs);
+      
+      // Sync all conversations to ensure member lists are up to date
+      const syncedConvs = await Promise.all(
+        convs.map(async (conv: any) => {
+          try {
+            await conv.sync();
+            return conv;
+          } catch (e) {
+            console.warn(`Could not sync conversation ${conv.id}:`, e);
+            return conv;
+          }
+        })
+      );
+      
+      setConversations(syncedConvs);
     } catch (err) {
       console.error('Error loading conversations:', err);
     }
@@ -428,21 +442,34 @@ const GovChatPage: React.FC = () => {
             Channels
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-            {conversations.map((conv, index) => (
-              <div
-                key={index}
-                onClick={() => handleJoinChannel(conv)}
-                className={`conversation-item ${currentConversation?.id === conv.id ? 'active' : ''}`}
-                style={{ cursor: 'pointer' }}
-              >
-                <div className="conversation-avatar">📡</div>
-                <div className="conversation-info">
-                  <div className="conversation-name">
-                    {conv.version === 'DM' ? 'Direct Message' : 'Channel'}
+            {conversations.map((conv, index) => {
+              // Get channel name from localStorage if available
+              const channels = JSON.parse(localStorage.getItem('gov_channels') || '[]');
+              const channelInfo = channels.find((c: any) => c.conversationId === conv.id);
+              const channelName = channelInfo?.name || (conv.version === 'DM' ? 'Direct Message' : 'Channel');
+              
+              // Get member count
+              const memberCount = conv.memberInboxIds?.length || 0;
+              
+              return (
+                <div
+                  key={index}
+                  onClick={() => handleJoinChannel(conv)}
+                  className={`conversation-item ${currentConversation?.id === conv.id ? 'active' : ''}`}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <div className="conversation-avatar">📡</div>
+                  <div className="conversation-info">
+                    <div className="conversation-name">
+                      {channelName}
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      {memberCount} {memberCount === 1 ? 'member' : 'members'}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

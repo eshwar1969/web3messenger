@@ -103,6 +103,8 @@ export class WalkieTalkieService {
         }
       });
 
+      console.log('Microphone access granted, stream tracks:', this.localStream.getTracks().length);
+
       // Signal to all members that we're starting to broadcast
       const broadcastStart = {
         type: 'walkie_talkie_start',
@@ -111,19 +113,8 @@ export class WalkieTalkieService {
       };
       await this.conversation.send(JSON.stringify(broadcastStart));
 
-      // Create peer connections to all members
+      // Create peer connections to all members (tracks will be added during creation)
       await this.createPeerConnections();
-
-      // Add local audio track to all peer connections
-      this.localStream.getTracks().forEach(track => {
-        this.peerConnections.forEach((pc, inboxId) => {
-          try {
-            pc.addTrack(track, this.localStream!);
-          } catch (error) {
-            console.warn(`Could not add track to peer ${inboxId}:`, error);
-          }
-        });
-      });
 
       this.isBroadcasting = true;
       this.currentBroadcaster = this.xmtpClient.inboxId;
@@ -189,7 +180,7 @@ export class WalkieTalkieService {
    * Create peer connections to all channel members
    */
   private async createPeerConnections(): Promise<void> {
-    if (!this.xmtpClient) return;
+    if (!this.xmtpClient || !this.localStream) return;
 
     const currentUserInboxId = this.xmtpClient.inboxId;
 
@@ -199,8 +190,20 @@ export class WalkieTalkieService {
       try {
         const pc = new RTCPeerConnection({ iceServers: this.iceServers });
 
-        // Handle remote audio stream
+        // CRITICAL: Add local audio tracks BEFORE creating the offer
+        // This ensures the offer includes the audio tracks
+        this.localStream.getTracks().forEach(track => {
+          try {
+            pc.addTrack(track, this.localStream!);
+            console.log(`Added audio track to peer connection for ${memberInboxId}`);
+          } catch (error) {
+            console.error(`Error adding track to ${memberInboxId}:`, error);
+          }
+        });
+
+        // Handle remote audio stream (for receiving)
         pc.ontrack = (event) => {
+          console.log(`Received remote track from ${memberInboxId}`, event);
           const remoteStream = event.streams[0];
           if (remoteStream) {
             // Play the remote audio
@@ -225,7 +228,10 @@ export class WalkieTalkieService {
         // Handle connection state
         pc.onconnectionstatechange = () => {
           console.log(`Connection to ${memberInboxId}: ${pc.connectionState}`);
-          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          if (pc.connectionState === 'connected') {
+            console.log(`✅ Audio connection established with ${memberInboxId}`);
+          } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+            console.warn(`⚠️ Connection to ${memberInboxId} failed/disconnected`);
             // Try to reconnect
             setTimeout(() => {
               if (this.isBroadcasting && !this.peerConnections.has(memberInboxId)) {
@@ -235,8 +241,11 @@ export class WalkieTalkieService {
           }
         };
 
-        // Create and send offer
-        const offer = await pc.createOffer();
+        // Create and send offer (tracks are already added above)
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: false, // We're only sending, not receiving
+          offerToReceiveVideo: false
+        });
         await pc.setLocalDescription(offer);
 
         const offerData = {
@@ -249,6 +258,7 @@ export class WalkieTalkieService {
 
         if (this.conversation) {
           await this.conversation.send(JSON.stringify(offerData));
+          console.log(`Sent WebRTC offer to ${memberInboxId}`);
         }
 
         this.peerConnections.set(memberInboxId, pc);
@@ -262,10 +272,19 @@ export class WalkieTalkieService {
    * Create a peer connection for a specific member
    */
   private async createPeerConnectionForMember(memberInboxId: string): Promise<void> {
-    if (!this.xmtpClient || this.peerConnections.has(memberInboxId)) return;
+    if (!this.xmtpClient || !this.localStream || this.peerConnections.has(memberInboxId)) return;
 
     const currentUserInboxId = this.xmtpClient.inboxId;
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+
+    // Add local audio tracks BEFORE creating offer
+    this.localStream.getTracks().forEach(track => {
+      try {
+        pc.addTrack(track, this.localStream!);
+      } catch (error) {
+        console.error(`Error adding track to ${memberInboxId}:`, error);
+      }
+    });
 
     pc.ontrack = (event) => {
       const remoteStream = event.streams[0];
@@ -287,7 +306,10 @@ export class WalkieTalkieService {
       }
     };
 
-    const offer = await pc.createOffer();
+    const offer = await pc.createOffer({
+      offerToReceiveAudio: false,
+      offerToReceiveVideo: false
+    });
     await pc.setLocalDescription(offer);
 
     const offerData = {
@@ -410,11 +432,14 @@ export class WalkieTalkieService {
 
     const currentUserInboxId = this.xmtpClient.inboxId;
 
+    console.log(`📥 Received WebRTC offer from ${senderInboxId}`);
+
     // Create peer connection if it doesn't exist
     if (!this.peerConnections.has(senderInboxId)) {
       const pc = new RTCPeerConnection({ iceServers: this.iceServers });
 
       pc.ontrack = (event) => {
+        console.log(`🎵 Received remote track from ${senderInboxId}`, event);
         const remoteStream = event.streams[0];
         if (remoteStream) {
           this.playRemoteAudio(remoteStream, senderInboxId);
@@ -434,6 +459,13 @@ export class WalkieTalkieService {
         }
       };
 
+      pc.onconnectionstatechange = () => {
+        console.log(`Connection to ${senderInboxId}: ${pc.connectionState}`);
+        if (pc.connectionState === 'connected') {
+          console.log(`✅ Audio connection established with ${senderInboxId}`);
+        }
+      };
+
       this.peerConnections.set(senderInboxId, pc);
     }
 
@@ -441,7 +473,10 @@ export class WalkieTalkieService {
     if (!pc) return;
 
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
+    const answer = await pc.createAnswer({
+      offerToReceiveAudio: false, // We're only receiving, not sending
+      offerToReceiveVideo: false
+    });
     await pc.setLocalDescription(answer);
 
     const answerData = {
@@ -453,6 +488,7 @@ export class WalkieTalkieService {
     };
 
     await this.conversation.send(JSON.stringify(answerData));
+    console.log(`📤 Sent WebRTC answer to ${senderInboxId}`);
   }
 
   /**
@@ -483,17 +519,53 @@ export class WalkieTalkieService {
    * Play remote audio stream
    */
   private playRemoteAudio(stream: MediaStream, senderInboxId: string): void {
+    console.log(`🎵 Playing remote audio from ${senderInboxId}`, stream);
+    
     // Create audio element for this sender
     const audio = new Audio();
     audio.srcObject = stream;
     audio.autoplay = true;
     audio.volume = 1.0;
+    audio.muted = false;
 
     // Store reference to prevent garbage collection
     (audio as any)._senderInboxId = senderInboxId;
+    
+    // Store in a map to prevent multiple audio elements for same sender
+    if (!(this as any).audioElements) {
+      (this as any).audioElements = new Map();
+    }
+    
+    // Remove old audio element for this sender if exists
+    const oldAudio = (this as any).audioElements.get(senderInboxId);
+    if (oldAudio) {
+      oldAudio.pause();
+      oldAudio.srcObject = null;
+    }
+    
+    (this as any).audioElements.set(senderInboxId, audio);
 
+    // Handle play promise (browser autoplay policy)
     audio.onloadedmetadata = () => {
-      audio.play().catch(console.error);
+      console.log(`Audio metadata loaded for ${senderInboxId}`);
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log(`✅ Audio playing from ${senderInboxId}`);
+          })
+          .catch((error) => {
+            console.error(`❌ Error playing audio from ${senderInboxId}:`, error);
+            // Try to play again after user interaction
+            document.addEventListener('click', () => {
+              audio.play().catch(console.error);
+            }, { once: true });
+          });
+      }
+    };
+
+    audio.onerror = (error) => {
+      console.error(`Audio error for ${senderInboxId}:`, error);
     };
 
     // Dispatch event for UI
@@ -531,6 +603,15 @@ export class WalkieTalkieService {
     this.peerConnections.clear();
     this.channelMembers.clear();
     this.currentBroadcaster = null;
+    
+    // Clean up audio elements
+    if ((this as any).audioElements) {
+      (this as any).audioElements.forEach((audio: HTMLAudioElement) => {
+        audio.pause();
+        audio.srcObject = null;
+      });
+      (this as any).audioElements.clear();
+    }
   }
 }
 

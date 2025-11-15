@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { PrivateXmtpService } from '../services/private-xmtp.service';
 import { FormatUtils } from '../utils/format';
+import { useAppStore } from '../store/useAppStore';
 
 interface AddChannelMemberProps {
   conversation: any;
@@ -111,21 +112,31 @@ const AddChannelMember: React.FC<AddChannelMemberProps> = ({ conversation, onMem
         detail: { message: `✅ Member added to channel!`, type: 'success' }
       }));
 
-      setMemberInput('');
-      setError(null);
-
-      // Sync the conversation to get updated member list
+      // CRITICAL: Sync the conversation after adding member
+      // This ensures the member is properly added and can see the channel
       try {
         await conversation.sync();
+        console.log('Conversation synced after adding member');
       } catch (e) {
         console.log('Sync error (non-critical):', e);
       }
+
+      // Send a welcome message to notify the new member
+      try {
+        const welcomeMessage = `👋 Welcome to the channel! You've been added by ${useAppStore.getState().xmtpClient?.inboxId?.slice(0, 8) || 'admin'}`;
+        await conversation.send(welcomeMessage);
+      } catch (e) {
+        console.log('Could not send welcome message:', e);
+      }
+
+      setMemberInput('');
+      setError(null);
 
       if (onMemberAdded) {
         onMemberAdded();
       }
 
-      alert('Member added successfully!');
+      alert('Member added successfully! They should now see this channel in their conversation list.');
     } catch (err: any) {
       console.error('Error adding member:', err);
       const errorMessage = err.message || 'Failed to add member';
