@@ -8,12 +8,16 @@ const HomePage: React.FC = () => {
   const router = useRouter();
   const { isConnected } = useAppStore();
 
-  const handleGetStarted = () => {
+  const handlePublicApp = () => {
     if (isConnected) {
       router.push('/chat');
     } else {
       router.push('/connect');
     }
+  };
+
+  const handleGovPortal = () => {
+    router.push('/gov-portal');
   };
 
   return (
@@ -49,12 +53,26 @@ const HomePage: React.FC = () => {
             </div>
           </div>
 
-          <button className="btn btn-primary" onClick={handleGetStarted}>
-            Get Started
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '2rem' }}>
+            <button className="btn btn-primary" onClick={handlePublicApp} style={{ width: '100%' }}>
+              🚀 Launch Public App
+            </button>
+            <button 
+              className="btn btn-secondary" 
+              onClick={handleGovPortal} 
+              style={{ 
+                width: '100%',
+                background: 'rgba(59, 130, 246, 0.1)',
+                border: '2px solid rgba(59, 130, 246, 0.3)',
+                color: 'var(--text-primary)'
+              }}
+            >
+              🛡️ Access Private Portal
+            </button>
+          </div>
 
           <p style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            Connect your wallet to start messaging
+            Choose your access mode above
           </p>
         </div>
       </div>

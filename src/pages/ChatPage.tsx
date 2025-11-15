@@ -10,10 +10,12 @@ import { FormatUtils } from '../utils/format';
 import { ConversationService } from '../services/conversation.service';
 import { FileService } from '../services/file.service';
 import { WebRTCService } from '../services/webrtc.service';
+import { PaymentService } from '../services/payment.service';
 import { useCallHandler } from '../hooks/useCallHandler';
 import CallControls from '../components/CallControls';
 import NewChatPanel from '../components/NewChatPanel';
 import AddRoomMember from '../components/AddRoomMember';
+import { BrowserProvider } from 'ethers';
 
 // Voice Player Component
 const VoicePlayer: React.FC<{ audioUrl: string }> = ({ audioUrl }) => {
@@ -105,6 +107,13 @@ const ChatPage: React.FC = () => {
   const [renameInput, setRenameInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [showSendPaymentModal, setShowSendPaymentModal] = useState(false);
+  const [showReceivePaymentModal, setShowReceivePaymentModal] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [recipientAddress, setRecipientAddress] = useState('');
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentSuccess, setPaymentSuccess] = useState<{ txHash: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuDropdownRef = useRef<HTMLDivElement>(null);
@@ -159,7 +168,7 @@ const ChatPage: React.FC = () => {
     if (!messageInput.trim() || isSending) return;
 
     // Check if room is blocked
-    if (currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id)) {
+    if (currentConversation && !isDMConversation(currentConversation) && isRoomBlocked(currentConversation.id)) {
       alert('This room is blocked. Please unblock it first to send messages.');
       return;
     }
@@ -180,7 +189,7 @@ const ChatPage: React.FC = () => {
     const file = e.target.files?.[0];
     if (file) {
       // Check if room is blocked
-      if (currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id)) {
+      if (currentConversation && !isDMConversation(currentConversation) && isRoomBlocked(currentConversation.id)) {
         alert('This room is blocked. Please unblock it first to send files.');
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
@@ -210,7 +219,7 @@ const ChatPage: React.FC = () => {
     }
 
     // Check if room is blocked
-    if (currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id)) {
+    if (!isDMConversation(currentConversation) && isRoomBlocked(currentConversation.id)) {
       alert('This room is blocked. Please unblock it first to send voice messages.');
       return;
     }
@@ -330,8 +339,28 @@ const ChatPage: React.FC = () => {
     const customName = ConversationService.getInstance().getConversationName(conv.id);
     if (customName) return customName;
     
-    if (conv.version === 'DM' && conv.peerInboxId) {
-      return FormatUtils.getInstance().formatInboxId(conv.peerInboxId);
+    // For DMs, try to show wallet address instead of inbox ID
+    if (isDMConversation(conv)) {
+      // Get peer inbox ID
+      const peerInboxId = conv.peerInboxId || 
+        (conv.memberInboxIds?.find((id: string) => id !== xmtpClient?.inboxId));
+      
+      if (peerInboxId) {
+        // Check if we have a stored wallet address for this inbox ID
+        const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
+        const walletAddress = storedAddresses[peerInboxId];
+        
+        if (walletAddress) {
+          // Show formatted wallet address (e.g., "0x1234...5678")
+          return FormatUtils.getInstance().formatAddress(walletAddress);
+        }
+        
+        // Fallback to formatted inbox ID
+        return FormatUtils.getInstance().formatInboxId(peerInboxId);
+      }
+      
+      // If no peer inbox ID, show generic DM name
+      return 'Direct Message';
     }
     
     // For rooms, assign number if not already assigned
@@ -349,12 +378,45 @@ const ChatPage: React.FC = () => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
+  // Helper function to detect if a conversation is a DM (defined early so it can be used in useEffect)
+  const isDMConversation = (conv: any): boolean => {
+    if (!conv) return false;
+    
+    // Check version property (most reliable)
+    if (conv.version === 'DM') return true;
+    
+    // Check if it has peerInboxId (indicates DM)
+    if (conv.peerInboxId) return true;
+    
+    // Check member count - DMs typically have 1 or 2 members total
+    const memberIds = conv.memberInboxIds || [];
+    const currentUserInboxId = xmtpClient?.inboxId;
+    
+    // If there are 0 or 1 members, it's likely a DM (especially if created as a group with just the peer)
+    if (memberIds.length <= 1) {
+      // If there's 1 member and it's not the current user, it's definitely a DM
+      if (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) return true;
+      // If there's 0 members, it might be a DM that hasn't synced yet
+      // But we'll be more conservative here - only treat as DM if version is set or peerInboxId exists
+    }
+    
+    // If there are exactly 2 members (you + 1 other = DM)
+    if (memberIds.length === 2) {
+      // If current user is in the list, there's 1 other person = DM
+      if (currentUserInboxId && memberIds.includes(currentUserInboxId)) return true;
+      // If current user is not in the list but there are 2 members, it might be a DM
+      return true;
+    }
+    
+    return false;
+  };
+
   // Calculate member count including current user - sync first to get latest data
   const [memberCount, setMemberCount] = useState<number>(0);
   
   useEffect(() => {
     const updateMemberCount = async () => {
-      if (!currentConversation || currentConversation.version === 'DM') {
+      if (!currentConversation || isDMConversation(currentConversation)) {
         setMemberCount(0);
         return;
       }
@@ -382,7 +444,7 @@ const ChatPage: React.FC = () => {
     };
     
     updateMemberCount();
-  }, [currentConversation, xmtpClient?.inboxId]);
+  }, [currentConversation, xmtpClient?.inboxId, isDMConversation]);
 
   const handleRenameRoom = () => {
     if (!currentConversation) return;
@@ -596,6 +658,133 @@ const ChatPage: React.FC = () => {
     }
   };
 
+  // Payment handlers
+  const handleOpenSendPayment = async () => {
+    if (!currentConversation) {
+      alert('Please select a conversation first');
+      return;
+    }
+
+    if (!isDMConversation(currentConversation)) {
+      alert('Payments are only available for direct messages');
+      return;
+    }
+
+    // Try to get recipient address
+    const paymentService = PaymentService.getInstance();
+    let address = await paymentService.getRecipientAddress(currentConversation, xmtpClient);
+    
+    // If we can't get it automatically, check if it's stored or prompt user
+    if (!address) {
+      // Check if we stored the address when creating the DM
+      const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
+      const peerInboxId = currentConversation.memberInboxIds?.find(
+        (id: string) => id !== xmtpClient?.inboxId
+      ) || currentConversation.peerInboxId;
+      
+      if (peerInboxId && storedAddresses[peerInboxId]) {
+        address = storedAddresses[peerInboxId];
+      } else {
+        // Prompt user to enter the recipient's wallet address
+        const userInput = prompt(
+          'Enter the recipient\'s wallet address (0x...):\n\n' +
+          'Note: For future payments, the address will be saved automatically.'
+        );
+        
+        if (!userInput || !/^0x[a-fA-F0-9]{40}$/i.test(userInput.trim())) {
+          if (userInput) {
+            alert('Invalid wallet address format. Please enter a valid Ethereum address (0x...).');
+          }
+          return;
+        }
+        
+        address = userInput.trim().toLowerCase();
+        
+        // Store it for future use
+        if (peerInboxId) {
+          storedAddresses[peerInboxId] = address;
+          localStorage.setItem('dm_wallet_addresses', JSON.stringify(storedAddresses));
+        }
+      }
+    }
+
+    setRecipientAddress(address);
+    setPaymentAmount('');
+    setPaymentError(null);
+    setPaymentSuccess(null);
+    setShowSendPaymentModal(true);
+  };
+
+  const handleSendPayment = async () => {
+    if (!paymentAmount || !recipientAddress) {
+      setPaymentError('Please enter amount and recipient address');
+      return;
+    }
+
+    if (!walletAddress) {
+      setPaymentError('Wallet not connected');
+      return;
+    }
+
+    if (!(window as any).ethereum) {
+      setPaymentError('MetaMask not detected');
+      return;
+    }
+
+    try {
+      setIsProcessingPayment(true);
+      setPaymentError(null);
+      setPaymentSuccess(null);
+
+      const provider = new BrowserProvider((window as any).ethereum);
+      const paymentService = PaymentService.getInstance();
+      
+      const result = await paymentService.sendPayment(recipientAddress, paymentAmount, provider);
+
+      if (result.success && result.txHash) {
+        setPaymentSuccess({ txHash: result.txHash });
+        
+        // Send a payment notification message
+        if (currentConversation) {
+          await currentConversation.send(JSON.stringify({
+            type: 'payment_sent',
+            amount: paymentAmount,
+            txHash: result.txHash,
+            recipient: recipientAddress,
+            timestamp: Date.now()
+          }));
+        }
+
+        window.dispatchEvent(new CustomEvent('app-log', {
+          detail: { message: `✅ Payment sent! TX: ${result.txHash.slice(0, 10)}...`, type: 'success' }
+        }));
+
+        // Clear form after 3 seconds
+        setTimeout(() => {
+          setPaymentAmount('');
+          setShowSendPaymentModal(false);
+          setPaymentSuccess(null);
+        }, 3000);
+      } else {
+        setPaymentError(result.error || 'Payment failed');
+      }
+    } catch (error: any) {
+      console.error('Payment error:', error);
+      setPaymentError(error.message || 'Failed to send payment');
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const handleOpenReceivePayment = () => {
+    if (!walletAddress) {
+      alert('Wallet not connected');
+      return;
+    }
+    setShowReceivePaymentModal(true);
+  };
+
+
   const filteredConversations = conversations.filter((conv: any) => {
     if (!searchQuery) return true;
     const name = getConversationDisplayName(conv);
@@ -674,7 +863,7 @@ const ChatPage: React.FC = () => {
             filteredConversations.map((conv: any, index: number) => {
               const isActive = currentConversation?.id === conv.id;
               const displayName = getConversationDisplayName(conv);
-              const isBlocked = conv.version !== 'DM' && isRoomBlocked(conv.id);
+              const isBlocked = !isDMConversation(conv) && isRoomBlocked(conv.id);
               // Get last message for this specific conversation
               const lastMessage = isActive && messages.length > 0 
                 ? messages[messages.length - 1] 
@@ -740,23 +929,54 @@ const ChatPage: React.FC = () => {
                 </div>
                 <div className="chat-header-info">
                   <h2 
-                    onClick={currentConversation.version !== 'DM' ? handleShowMembers : undefined}
+                    onClick={!isDMConversation(currentConversation) ? handleShowMembers : undefined}
                     style={{ 
-                      cursor: currentConversation.version !== 'DM' ? 'pointer' : 'default',
+                      cursor: !isDMConversation(currentConversation) ? 'pointer' : 'default',
                       userSelect: 'none'
                     }}
-                    title={currentConversation.version !== 'DM' ? 'Click to view members' : ''}
+                    title={!isDMConversation(currentConversation) ? 'Click to view members' : ''}
                   >
                     {getConversationDisplayName(currentConversation)}
                   </h2>
                   <p>
-                    {currentConversation.version === 'DM' 
-                      ? 'Direct message' 
-                      : `${memberCount} members`}
+                    {isDMConversation(currentConversation) ? (
+                      (() => {
+                        const peerInboxId = currentConversation.peerInboxId || 
+                          (currentConversation.memberInboxIds?.find((id: string) => id !== xmtpClient?.inboxId));
+                        const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
+                        const walletAddress = peerInboxId ? storedAddresses[peerInboxId] : null;
+                        return walletAddress 
+                          ? `Wallet: ${FormatUtils.getInstance().formatAddress(walletAddress)}`
+                          : 'Direct message';
+                      })()
+                    ) : (
+                      `${memberCount} members`
+                    )}
                   </p>
                 </div>
               </div>
               <div className="chat-header-actions" style={{ position: 'relative' }}>
+                {/* Payment buttons - only show for DMs */}
+                {currentConversation && isDMConversation(currentConversation) && (
+                  <>
+                    <button 
+                      className="icon-btn" 
+                      title="Send Payment"
+                      onClick={handleOpenSendPayment}
+                      style={{ color: '#10b981' }}
+                    >
+                      💸
+                    </button>
+                    <button 
+                      className="icon-btn" 
+                      title="Receive Payment"
+                      onClick={handleOpenReceivePayment}
+                      style={{ color: '#3b82f6' }}
+                    >
+                      💰
+                    </button>
+                  </>
+                )}
                 <button 
                   className="icon-btn" 
                   title="Voice call"
@@ -779,7 +999,7 @@ const ChatPage: React.FC = () => {
                   >
                     ⋯
                   </button>
-                  {showMenuDropdown && currentConversation.version !== 'DM' && (
+                  {showMenuDropdown && !isDMConversation(currentConversation) && (
                     <div style={{
                       position: 'absolute',
                       top: '100%',
@@ -863,8 +1083,8 @@ const ChatPage: React.FC = () => {
               </div>
             </div>
             
-            {/* Add Member Section for Rooms */}
-            {currentConversation.version !== 'DM' && (
+            {/* Add Member Section for Rooms - only show for actual groups, not DMs */}
+            {!isDMConversation(currentConversation) && (
               <div style={{ padding: '0.75rem 1rem', background: 'var(--background-light)', borderBottom: '1px solid var(--border-color)' }}>
                 <AddRoomMember 
                   conversation={currentConversation}
@@ -887,7 +1107,7 @@ const ChatPage: React.FC = () => {
             )}
 
             <div className="chat-messages">
-              {currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id) ? (
+              {currentConversation && !isDMConversation(currentConversation) && isRoomBlocked(currentConversation.id) ? (
                 <div className="empty-chat">
                   <div className="empty-chat-icon">🚫</div>
                   <h3>This room is blocked</h3>
@@ -941,12 +1161,25 @@ const ChatPage: React.FC = () => {
                         
                         // Handle voice messages
                         if (attachment.type === 'voice_message' || attachment.mimeType?.startsWith('audio/')) {
+                          const senderName = isSent 
+                            ? 'YOU' 
+                            : (message.senderInboxId?.slice(0, 12).toUpperCase() || 'PEER.INBOX');
+                          
                           return (
                             <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
                               <div className="message-bubble">
+                                <div className="message-header">
+                                  <span style={{ 
+                                    fontSize: '0.75rem', 
+                                    fontWeight: 600,
+                                    color: isSent ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.85)'
+                                  }}>
+                                    {senderName}
+                                  </span>
+                                </div>
                                 <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                   <VoicePlayer audioUrl={downloadUrl} />
-                                  <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                                  <span style={{ fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.9)' }}>
                                     🎤 Voice message
                                   </span>
                                 </div>
@@ -959,13 +1192,26 @@ const ChatPage: React.FC = () => {
                         }
                         
                         // Regular file attachments
+                        const senderName = isSent 
+                          ? 'YOU' 
+                          : (message.senderInboxId?.slice(0, 12).toUpperCase() || 'PEER.INBOX');
+                        
                         return (
                           <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
                             <div className="message-bubble">
+                              <div className="message-header">
+                                <span style={{ 
+                                  fontSize: '0.75rem', 
+                                  fontWeight: 600,
+                                  color: isSent ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.85)'
+                                }}>
+                                  {senderName}
+                                </span>
+                              </div>
                               <div className="message-content">
                                 📎 {FormatUtils.getInstance().escapeHtml(attachment.filename)}
                               </div>
-                              <a href={downloadUrl} download={attachment.filename} style={{ color: 'var(--primary-green-dark)', textDecoration: 'none' }}>
+                              <a href={downloadUrl} download={attachment.filename} style={{ color: 'rgba(255, 255, 255, 0.9)', textDecoration: 'underline', fontSize: '0.875rem' }}>
                                 Download
                               </a>
                               <div className="message-time">
@@ -980,9 +1226,22 @@ const ChatPage: React.FC = () => {
                     }
 
                     // Regular message
+                    const senderName = isSent 
+                      ? 'YOU' 
+                      : (message.senderInboxId?.slice(0, 12).toUpperCase() || 'PEER.INBOX');
+                    
                     return (
                       <div key={index} className={`message ${isSent ? 'sent' : 'received'}`}>
                         <div className="message-bubble">
+                          <div className="message-header">
+                            <span style={{ 
+                              fontSize: '0.75rem', 
+                              fontWeight: 600,
+                              color: isSent ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.85)'
+                            }}>
+                              {senderName}
+                            </span>
+                          </div>
                           <div className="message-content">{message.content}</div>
                           <div className="message-time">
                             {FormatUtils.getInstance().formatMessageTime(message.sentAtNs)}
@@ -999,7 +1258,7 @@ const ChatPage: React.FC = () => {
 
             <CallControls />
 
-            {currentConversation && currentConversation.version !== 'DM' && isRoomBlocked(currentConversation.id) ? (
+            {currentConversation && !isDMConversation(currentConversation) && isRoomBlocked(currentConversation.id) ? (
               <div style={{ 
                 padding: '1rem', 
                 textAlign: 'center', 
@@ -1067,7 +1326,7 @@ const ChatPage: React.FC = () => {
                       onClick={startVoiceRecording}
                       disabled={isSending}
                       style={{
-                        background: '#667eea',
+                        background: 'var(--gradient-primary)',
                         marginRight: '8px'
                       }}
                       title="Record voice message"
@@ -1109,12 +1368,15 @@ const ChatPage: React.FC = () => {
         >
           <div 
             style={{
-              background: 'white',
+              background: 'rgba(26, 26, 26, 0.95)',
+              backdropFilter: 'blur(20px)',
               padding: '24px',
               borderRadius: '12px',
               maxWidth: '500px',
               width: '90%',
-              boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+              boxShadow: '0 4px 20px rgba(0,0,0,0.8)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)'
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -1132,10 +1394,11 @@ const ChatPage: React.FC = () => {
                     fontSize: '13px', 
                     wordBreak: 'break-all', 
                     fontFamily: 'monospace', 
-                    background: '#f8fafc', 
+                    background: 'rgba(26, 26, 26, 0.5)', 
                     padding: '12px', 
                     borderRadius: '8px', 
-                    border: '1px solid #e2e8f0', 
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-primary)', 
                     flex: 1 
                   }}>
                     {xmtpClient.inboxId}
@@ -1160,9 +1423,10 @@ const ChatPage: React.FC = () => {
                   color: 'var(--text-secondary)', 
                   marginTop: '0.5rem',
                   padding: '0.5rem',
-                  background: '#f0f7ff',
+                  background: 'rgba(59, 130, 246, 0.1)',
                   borderRadius: '6px',
-                  border: '1px solid #dbeafe'
+                  border: '1px solid rgba(59, 130, 246, 0.2)',
+                  color: 'var(--text-secondary)'
                 }}>
                   💡 Share this with others so they can add you to rooms or start DMs
                 </div>
@@ -1181,10 +1445,11 @@ const ChatPage: React.FC = () => {
                     fontSize: '13px', 
                     wordBreak: 'break-all', 
                     fontFamily: 'monospace', 
-                    background: '#f8fafc', 
+                    background: 'rgba(26, 26, 26, 0.5)', 
                     padding: '12px', 
                     borderRadius: '8px', 
-                    border: '1px solid #e2e8f0', 
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-primary)', 
                     flex: 1 
                   }}>
                     {walletAddress}
@@ -1212,7 +1477,7 @@ const ChatPage: React.FC = () => {
               style={{ 
                 width: '100%', 
                 padding: '10px', 
-                background: '#667eea', 
+                background: 'var(--gradient-primary)', 
                 color: 'white', 
                 border: 'none', 
                 borderRadius: '8px', 
@@ -1246,12 +1511,15 @@ const ChatPage: React.FC = () => {
         >
           <div 
             style={{
-              background: 'white',
+              background: 'rgba(30, 27, 75, 0.95)',
+              backdropFilter: 'blur(20px)',
               padding: '24px',
               borderRadius: '12px',
               maxWidth: '400px',
               width: '90%',
-              boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+              boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)'
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -1302,7 +1570,7 @@ const ChatPage: React.FC = () => {
                 onClick={handleSaveRename}
                 style={{
                   padding: '10px 20px',
-                  background: '#667eea',
+                  background: 'var(--gradient-primary)',
                   border: 'none',
                   borderRadius: '8px',
                   cursor: 'pointer',
@@ -1319,7 +1587,7 @@ const ChatPage: React.FC = () => {
       )}
 
       {/* Members Modal */}
-      {showMembersModal && currentConversation && currentConversation.version !== 'DM' && (
+      {showMembersModal && currentConversation && !isDMConversation(currentConversation) && (
         <div 
           style={{
             position: 'fixed',
@@ -1337,14 +1605,17 @@ const ChatPage: React.FC = () => {
         >
           <div 
             style={{
-              background: 'white',
+              background: 'rgba(30, 27, 75, 0.95)',
+              backdropFilter: 'blur(20px)',
               padding: '24px',
               borderRadius: '12px',
               maxWidth: '600px',
               width: '90%',
               maxHeight: '80vh',
               overflow: 'auto',
-              boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+              boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)'
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -1380,9 +1651,9 @@ const ChatPage: React.FC = () => {
                       style={{
                         padding: '12px',
                         marginBottom: '8px',
-                        background: isCurrentUser ? '#f0f7ff' : '#f8fafc',
+                        background: isCurrentUser ? 'rgba(59, 130, 246, 0.15)' : 'rgba(26, 26, 26, 0.5)',
                         borderRadius: '8px',
-                        border: `1px solid ${isCurrentUser ? '#dbeafe' : '#e2e8f0'}`,
+                        border: `1px solid ${isCurrentUser ? 'rgba(59, 130, 246, 0.3)' : 'var(--border-color)'}`,
                         display: 'flex',
                         flexDirection: 'column',
                         gap: '8px'
@@ -1488,13 +1759,310 @@ const ChatPage: React.FC = () => {
               style={{ 
                 width: '100%', 
                 padding: '10px', 
-                background: '#667eea', 
+                background: 'var(--gradient-primary)', 
                 color: 'white', 
                 border: 'none', 
                 borderRadius: '8px', 
                 cursor: 'pointer',
                 fontSize: '14px',
                 fontWeight: '600'
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Send Payment Modal */}
+      {showSendPaymentModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1003
+          }}
+          onClick={() => {
+            if (!isProcessingPayment) {
+              setShowSendPaymentModal(false);
+              setPaymentAmount('');
+              setPaymentError(null);
+              setPaymentSuccess(null);
+            }
+          }}
+        >
+          <div 
+            style={{
+              background: 'rgba(26, 26, 26, 0.95)',
+              backdropFilter: 'blur(20px)',
+              padding: '24px',
+              borderRadius: '12px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.8)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', fontWeight: '600' }}>
+              💸 Send Payment
+            </h3>
+
+            {paymentSuccess ? (
+              <div style={{ textAlign: 'center', padding: '20px' }}>
+                <div style={{ fontSize: '3rem', marginBottom: '16px' }}>✅</div>
+                <h4 style={{ margin: '0 0 12px 0', color: '#10b981' }}>Payment Sent!</h4>
+                <p style={{ margin: '0 0 16px 0', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                  Transaction Hash:
+                </p>
+                <div style={{
+                  background: 'rgba(26, 26, 26, 0.5)',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontFamily: 'monospace',
+                  fontSize: '0.75rem',
+                  wordBreak: 'break-all',
+                  marginBottom: '16px',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  {paymentSuccess.txHash}
+                </div>
+                <a
+                  href={`https://etherscan.io/tx/${paymentSuccess.txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    color: '#3b82f6',
+                    textDecoration: 'underline',
+                    fontSize: '0.875rem'
+                  }}
+                >
+                  View on Etherscan →
+                </a>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px' }}>
+                    Recipient Address
+                  </label>
+                  <input
+                    type="text"
+                    value={recipientAddress}
+                    onChange={(e) => setRecipientAddress(e.target.value)}
+                    placeholder="0x..."
+                    disabled={isProcessingPayment}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      fontSize: '13px',
+                      fontFamily: 'monospace',
+                      background: 'rgba(26, 26, 26, 0.5)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px' }}>
+                    Amount (ETH)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    min="0"
+                    value={paymentAmount}
+                    onChange={(e) => setPaymentAmount(e.target.value)}
+                    placeholder="0.0"
+                    disabled={isProcessingPayment}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      fontSize: '14px',
+                      background: 'rgba(26, 26, 26, 0.5)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                </div>
+
+                {paymentError && (
+                  <div style={{
+                    padding: '12px',
+                    background: 'rgba(220, 38, 38, 0.1)',
+                    border: '1px solid rgba(220, 38, 38, 0.3)',
+                    borderRadius: '8px',
+                    marginBottom: '16px',
+                    color: '#fca5a5',
+                    fontSize: '0.875rem'
+                  }}>
+                    {paymentError}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => {
+                      setShowSendPaymentModal(false);
+                      setPaymentAmount('');
+                      setPaymentError(null);
+                    }}
+                    disabled={isProcessingPayment}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: 'transparent',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      cursor: isProcessingPayment ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      color: 'var(--text-secondary)'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSendPayment}
+                    disabled={!paymentAmount || !recipientAddress || isProcessingPayment}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: isProcessingPayment ? '#6b7280' : 'var(--gradient-primary)',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: (!paymentAmount || !recipientAddress || isProcessingPayment) ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      color: 'white'
+                    }}
+                  >
+                    {isProcessingPayment ? 'Processing...' : 'Send Payment'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Receive Payment Modal */}
+      {showReceivePaymentModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1003
+          }}
+          onClick={() => setShowReceivePaymentModal(false)}
+        >
+          <div 
+            style={{
+              background: 'rgba(26, 26, 26, 0.95)',
+              backdropFilter: 'blur(20px)',
+              padding: '24px',
+              borderRadius: '12px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.8)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', fontWeight: '600' }}>
+              💰 Receive Payment
+            </h3>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px' }}>
+                Your Wallet Address
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <p style={{ 
+                  margin: '0', 
+                  fontSize: '13px', 
+                  wordBreak: 'break-all', 
+                  fontFamily: 'monospace', 
+                  background: 'rgba(26, 26, 26, 0.5)', 
+                  padding: '12px', 
+                  borderRadius: '8px', 
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-primary)', 
+                  flex: 1 
+                }}>
+                  {walletAddress}
+                </p>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(walletAddress || '');
+                    window.dispatchEvent(new CustomEvent('app-log', {
+                      detail: { message: '📋 Wallet address copied!', type: 'success' }
+                    }));
+                    alert('Wallet address copied to clipboard!');
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    background: 'var(--gradient-primary)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    whiteSpace: 'nowrap',
+                    fontWeight: '600',
+                    color: 'white'
+                  }}
+                  title="Copy wallet address"
+                >
+                  📋 Copy
+                </button>
+              </div>
+            </div>
+
+            <div style={{
+              padding: '16px',
+              background: 'rgba(59, 130, 246, 0.1)',
+              borderRadius: '8px',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              marginBottom: '20px'
+            }}>
+              <p style={{ margin: '0', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                💡 Share this address with the sender. They can send payment to this address using the "Send Payment" button in the chat.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setShowReceivePaymentModal(false)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'var(--gradient-primary)',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '600',
+                color: 'white'
               }}
             >
               Close

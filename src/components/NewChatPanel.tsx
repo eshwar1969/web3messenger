@@ -47,6 +47,33 @@ const NewChatPanel: React.FC<NewChatPanelProps> = ({ onClose }) => {
         }));
       }
 
+      // Prompt user to optionally enter wallet address for easier identification
+      const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
+      if (!storedAddresses[inboxId]) {
+        const walletAddressInput = prompt(
+          '💡 Optional: Enter the wallet address (0x...) for easier identification.\n\n' +
+          'This will help you recognize who you\'re chatting with.\n' +
+          'You can skip this and add it later.\n\n' +
+          'Wallet address (or leave empty to skip):'
+        );
+        
+        if (walletAddressInput && walletAddressInput.trim()) {
+          const address = walletAddressInput.trim();
+          // Validate address format
+          if (/^0x[a-fA-F0-9]{40}$/i.test(address)) {
+            storedAddresses[inboxId] = address.toLowerCase();
+            localStorage.setItem('dm_wallet_addresses', JSON.stringify(storedAddresses));
+            window.dispatchEvent(new CustomEvent('app-log', {
+              detail: { message: '✅ Wallet address saved for this contact!', type: 'success' }
+            }));
+          } else {
+            window.dispatchEvent(new CustomEvent('app-log', {
+              detail: { message: '⚠️ Invalid wallet address format. Skipped.', type: 'warning' }
+            }));
+          }
+        }
+      }
+
       // Reload conversations and automatically open the conversation
       await loadConversations();
       await new Promise(resolve => setTimeout(resolve, 500));
