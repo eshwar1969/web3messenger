@@ -86,7 +86,27 @@ export class XmtpService {
   }
 
   getClient(): Client | null {
+    // If internal client is not set, try to get it from the store
+    if (!this.client) {
+      try {
+        // Try to get client from store if available
+        const store = (window as any).__XMTP_STORE__;
+        if (store?.getState?.()) {
+          const state = store.getState();
+          if (state?.xmtpClient) {
+            this.client = state.xmtpClient;
+            return this.client;
+          }
+        }
+      } catch (e) {
+        // Store not available, continue
+      }
+    }
     return this.client;
+  }
+
+  setClient(client: Client | null): void {
+    this.client = client;
   }
 
   async getInboxIdByAddress(address: string): Promise<string | null> {
@@ -156,54 +176,65 @@ export class XmtpService {
   }
 
   async createDM(inboxId: string) {
-    if (!this.client) throw new Error('XMTP client not initialized');
+    const client = this.getClient();
+    if (!client) throw new Error('XMTP client not initialized');
     try {
-      // Use the SAME logic as rooms - create empty group and add member
-      // This ensures messages are routed correctly and don't echo back
-      const group = await this.client.conversations.newGroup([]);
+      // First, try to get existing DM (like main.js line 1320)
+      // This is the proper way to check for existing DMs
+      let dm: any = null;
+      try {
+        dm = await client.conversations.getDmByInboxId(inboxId);
+        if (dm) {
+          console.log('✅ Existing DM found');
+          // Ensure it's marked as DM in multiple ways
+          if (!dm.peerInboxId) {
+            (dm as any).peerInboxId = inboxId;
+          }
+          if (!dm.version) {
+            (dm as any).version = 'DM';
+          }
+          
+          // Also store in localStorage for persistence
+          const { ConversationService } = await import('./conversation.service');
+          ConversationService.getInstance().markAsDM(dm.id, inboxId);
+          
+          return dm;
+        }
+      } catch (getDmError) {
+        // getDmByInboxId might throw if DM doesn't exist, which is fine
+        console.log('No existing DM found, creating new one');
+      }
+      
+      // If DM doesn't exist, create a new one
+      // In XMTP V3 browser SDK, DMs are created as groups with a single member
+      // This matches main.js line 1324: dm = await xmtpClient.conversations.newGroup([inboxId]);
+      dm = await client.conversations.newGroup([inboxId]);
       
       // CRITICAL: Sync the conversation to ensure it's properly initialized
       try {
-        await group.sync();
+        await dm.sync();
         console.log('✅ DM conversation synced successfully');
       } catch (syncError) {
         console.warn('Could not sync DM conversation immediately:', syncError);
         // Continue anyway - sync will happen when needed
       }
       
-      // Add the peer as a member (same as adding members to rooms)
-      try {
-        await group.addMembers([inboxId]);
-        console.log('✅ Peer added to DM conversation');
-      } catch (addError) {
-        console.warn('Could not add peer to DM:', addError);
-        // Continue anyway - member might already be added
-      }
-      
-      // Sync again after adding member to ensure it's updated
-      try {
-        await group.sync();
-        console.log('✅ DM conversation synced after adding member');
-      } catch (syncError) {
-        console.warn('Could not sync DM conversation after adding member:', syncError);
-      }
-      
       // CRITICAL: Mark it as a DM immediately in multiple ways
       // 1. Set properties on the object
-      (group as any).peerInboxId = inboxId;
-      (group as any).version = 'DM';
+      (dm as any).peerInboxId = inboxId;
+      (dm as any).version = 'DM';
       
       // 2. Store in localStorage for persistence (separate from rooms)
       const { ConversationService } = await import('./conversation.service');
-      ConversationService.getInstance().markAsDM(group.id, inboxId);
+      ConversationService.getInstance().markAsDM(dm.id, inboxId);
       
-      console.log('DM created using room logic and marked as private chat:', { 
-        id: group.id,
+      console.log('DM created and marked as private chat:', { 
+        id: dm.id,
         peerInboxId: inboxId, 
         version: 'DM',
         stored: true
       });
-      return group;
+      return dm;
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
       console.error('Error creating DM:', errorMsg);
@@ -212,18 +243,21 @@ export class XmtpService {
   }
 
   async createGroup(inboxIds: string[]) {
-    if (!this.client) throw new Error('XMTP client not initialized');
-    return await this.client.conversations.newGroup(inboxIds);
+    const client = this.getClient();
+    if (!client) throw new Error('XMTP client not initialized');
+    return await client.conversations.newGroup(inboxIds);
   }
 
   async loadConversations() {
-    if (!this.client) throw new Error('XMTP client not initialized');
-    return await this.client.conversations.list();
+    const client = this.getClient();
+    if (!client) throw new Error('XMTP client not initialized');
+    return await client.conversations.list();
   }
 
   async streamConversations() {
-    if (!this.client) throw new Error('XMTP client not initialized');
-    return await this.client.conversations.stream();
+    const client = this.getClient();
+    if (!client) throw new Error('XMTP client not initialized');
+    return await client.conversations.stream();
   }
 
   // Installation management methods - can be used WITHOUT creating a client

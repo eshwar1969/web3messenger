@@ -59,6 +59,9 @@ export const useXmtp = () => {
       
       const client = await XmtpService.getInstance().initializeClient(ethersSigner, 'dev');
 
+      // Ensure XmtpService has the client reference
+      XmtpService.getInstance().setClient(client);
+      
       setXmtpClient(client);
       setIsConnected(true);
 

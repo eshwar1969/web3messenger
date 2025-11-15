@@ -26,6 +26,9 @@ export const useConversations = () => {
       setIsLoading(true);
       setError(null);
 
+      // Ensure XmtpService has the client reference
+      XmtpService.getInstance().setClient(xmtpClient);
+
       console.log('Loading conversations...');
       
       window.dispatchEvent(new CustomEvent('app-log', {
@@ -38,7 +41,21 @@ export const useConversations = () => {
       const { ConversationService } = await import('../services/conversation.service');
       const currentUserInboxId = xmtpClient.inboxId;
       
-      const markedConversations = convs.map((conv: any) => {
+      // CRITICAL: Sync all conversations first to get accurate member counts
+      // This is especially important for the receiver to detect DMs correctly
+      const syncedConversations = await Promise.all(
+        convs.map(async (conv: any) => {
+          try {
+            await conv.sync();
+            return conv;
+          } catch (syncError) {
+            console.warn(`Could not sync conversation ${conv.id}:`, syncError);
+            return conv; // Return unsynced if sync fails
+          }
+        })
+      );
+      
+      const markedConversations = syncedConversations.map((conv: any) => {
         // First, check localStorage - this is the most reliable
         const isStoredDM = ConversationService.getInstance().isDM(conv.id);
         if (isStoredDM) {
@@ -57,6 +74,7 @@ export const useConversations = () => {
         }
         
         // Check if it's a DM by member count (1 or 2 members = DM, private chat)
+        // CRITICAL: Use synced member list for accurate detection
         const memberIds = conv.memberInboxIds || [];
         
         // If there's exactly 1 member and it's not the current user, it's a DM
@@ -65,6 +83,7 @@ export const useConversations = () => {
           conv.peerInboxId = peerId;
           conv.version = 'DM';
           ConversationService.getInstance().markAsDM(conv.id, peerId);
+          console.log('✅ Detected DM (1 member, not current user):', { id: conv.id, peerId });
           return conv;
         }
         
@@ -83,6 +102,7 @@ export const useConversations = () => {
             conv.peerInboxId = peerId;
             conv.version = 'DM';
             ConversationService.getInstance().markAsDM(conv.id, peerId);
+            console.log('✅ Detected DM (2 members):', { id: conv.id, peerId });
           }
           return conv;
         }
@@ -130,13 +150,51 @@ export const useConversations = () => {
     const conversation = conversations[index];
     if (!conversation) return;
 
+    // CRITICAL: Sync conversation first to get accurate member list
+    // This ensures DM detection works correctly for the receiver
+    try {
+      await conversation.sync();
+    } catch (syncError) {
+      console.warn('Could not sync conversation on select:', syncError);
+    }
+
     // Check if it's a DM (using the same logic as ChatPage)
     const memberIds = conversation.memberInboxIds || [];
     const currentUserInboxId = xmtpClient?.inboxId;
-    const isDM = conversation.version === 'DM' || 
-                 conversation.peerInboxId ||
-                 (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) ||
-                 (memberIds.length === 2 && currentUserInboxId && memberIds.includes(currentUserInboxId));
+    
+    // Use ConversationService to check if it's a DM (most reliable)
+    const { ConversationService } = await import('../services/conversation.service');
+    let isDM = ConversationService.getInstance().isDM(conversation.id);
+    
+    // If not in localStorage, check by member count
+    if (!isDM) {
+      isDM = conversation.version === 'DM' || 
+             conversation.peerInboxId ||
+             (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) ||
+             (memberIds.length === 2 && currentUserInboxId && memberIds.includes(currentUserInboxId));
+      
+      // If detected as DM, mark it immediately
+      if (isDM) {
+        let peerId: string | null = null;
+        if (conversation.peerInboxId) {
+          peerId = conversation.peerInboxId;
+        } else if (memberIds.length === 1) {
+          peerId = memberIds[0];
+        } else if (memberIds.length === 2) {
+          peerId = memberIds.find((id: string) => id !== currentUserInboxId) || memberIds[0];
+        }
+        
+        if (peerId) {
+          ConversationService.getInstance().markAsDM(conversation.id, peerId);
+          conversation.peerInboxId = peerId;
+          conversation.version = 'DM';
+          console.log('✅ Auto-detected DM when selecting conversation:', { id: conversation.id, peerId });
+          
+          // Reload conversations to update UI
+          await loadConversations();
+        }
+      }
+    }
     
     // Check if room is blocked (only for non-DMs)
     const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
@@ -153,12 +211,12 @@ export const useConversations = () => {
     setCurrentConversation(conversation);
     // Update notification service to track current conversation
     NotificationService.getInstance().setCurrentConversation(conversation.id);
-    console.log('Conversation selected');
+    console.log('Conversation selected', isDM ? '(DM)' : '(Room)');
 
     // Load messages for the selected conversation
     await loadMessages(conversation);
 
-  }, [conversations, setCurrentConversation, setMessages, loadMessages, xmtpClient]);
+  }, [conversations, setCurrentConversation, setMessages, loadMessages, xmtpClient, loadConversations]);
 
   const sendMessage = useCallback(async (content: string) => {
     if (!currentConversation) {
@@ -183,6 +241,9 @@ export const useConversations = () => {
     if (!xmtpClient) throw new Error('XMTP client not initialized');
 
     try {
+      // Ensure XmtpService has the client reference
+      XmtpService.getInstance().setClient(xmtpClient);
+      
       // createDM will handle both getting existing DM and creating new one
       const dm: any = await XmtpService.getInstance().createDM(inboxId);
 
@@ -233,6 +294,9 @@ export const useConversations = () => {
 
     const streamConversations = async () => {
       try {
+        // Ensure XmtpService has the client reference
+        XmtpService.getInstance().setClient(xmtpClient);
+        
         console.log('Listening for new conversations...');
         const stream = await XmtpService.getInstance().streamConversations();
 
@@ -305,17 +369,52 @@ export const useConversations = () => {
 
   // Stream messages for current conversation
   useEffect(() => {
-    if (!currentConversation) return;
+    if (!currentConversation || !xmtpClient) return;
 
     const streamMessages = async () => {
       try {
-        // Check if it's a DM
+        // CRITICAL: Sync conversation first to get accurate member list
+        // This ensures DM detection works correctly for the receiver
+        try {
+          await currentConversation.sync();
+        } catch (syncError) {
+          console.warn('Could not sync conversation before streaming:', syncError);
+        }
+        
+        // Check if it's a DM using synced data
         const memberIds = currentConversation.memberInboxIds || [];
-        const currentUserInboxId = xmtpClient?.inboxId;
-        const isDM = currentConversation.version === 'DM' || 
-                     currentConversation.peerInboxId ||
-                     (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) ||
-                     (memberIds.length === 2 && currentUserInboxId && memberIds.includes(currentUserInboxId));
+        const currentUserInboxId = xmtpClient.inboxId;
+        
+        // Use ConversationService to check if it's a DM (most reliable)
+        const { ConversationService } = await import('../services/conversation.service');
+        let isDM = ConversationService.getInstance().isDM(currentConversation.id);
+        
+        // If not in localStorage, check by member count
+        if (!isDM) {
+          isDM = currentConversation.version === 'DM' || 
+                 currentConversation.peerInboxId ||
+                 (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) ||
+                 (memberIds.length === 2 && currentUserInboxId && memberIds.includes(currentUserInboxId));
+          
+          // If detected as DM, mark it in localStorage
+          if (isDM) {
+            let peerId: string | null = null;
+            if (currentConversation.peerInboxId) {
+              peerId = currentConversation.peerInboxId;
+            } else if (memberIds.length === 1) {
+              peerId = memberIds[0];
+            } else if (memberIds.length === 2) {
+              peerId = memberIds.find((id: string) => id !== currentUserInboxId) || memberIds[0];
+            }
+            
+            if (peerId) {
+              ConversationService.getInstance().markAsDM(currentConversation.id, peerId);
+              currentConversation.peerInboxId = peerId;
+              currentConversation.version = 'DM';
+              console.log('✅ Auto-detected DM in message stream:', { id: currentConversation.id, peerId });
+            }
+          }
+        }
         
         // Check if room is blocked (only for non-DMs)
         const blockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
@@ -324,17 +423,54 @@ export const useConversations = () => {
           return;
         }
 
-        console.log('Listening for new messages...');
+        console.log('Listening for new messages...', isDM ? '(DM)' : '(Room)');
         const stream = await currentConversation.stream();
 
         for await (const message of stream) {
+          // CRITICAL: Re-check DM status on each message to ensure receiver detects it
+          // Sync conversation to get latest member list
+          try {
+            await currentConversation.sync();
+          } catch (syncError) {
+            // Continue if sync fails
+          }
+          
           // Check again if room is blocked (in case it was blocked while streaming)
           const currentMemberIds = currentConversation.memberInboxIds || [];
-          const currentUserInboxId = xmtpClient?.inboxId;
-          let currentIsDM = currentConversation.version === 'DM' || 
-                       currentConversation.peerInboxId ||
-                       (currentMemberIds.length === 1 && currentUserInboxId && !currentMemberIds.includes(currentUserInboxId)) ||
-                       (currentMemberIds.length === 2 && currentUserInboxId && currentMemberIds.includes(currentUserInboxId));
+          const currentUserInboxId = xmtpClient.inboxId;
+          
+          // Re-check DM status using ConversationService (most reliable)
+          let currentIsDM = ConversationService.getInstance().isDM(currentConversation.id);
+          
+          // If not in localStorage, check by member count
+          if (!currentIsDM) {
+            currentIsDM = currentConversation.version === 'DM' || 
+                         currentConversation.peerInboxId ||
+                         (currentMemberIds.length === 1 && currentUserInboxId && !currentMemberIds.includes(currentUserInboxId)) ||
+                         (currentMemberIds.length === 2 && currentUserInboxId && currentMemberIds.includes(currentUserInboxId));
+            
+            // If detected as DM, mark it immediately
+            if (currentIsDM) {
+              let peerId: string | null = null;
+              if (currentConversation.peerInboxId) {
+                peerId = currentConversation.peerInboxId;
+              } else if (currentMemberIds.length === 1) {
+                peerId = currentMemberIds[0];
+              } else if (currentMemberIds.length === 2) {
+                peerId = currentMemberIds.find((id: string) => id !== currentUserInboxId) || currentMemberIds[0];
+              }
+              
+              if (peerId) {
+                ConversationService.getInstance().markAsDM(currentConversation.id, peerId);
+                currentConversation.peerInboxId = peerId;
+                currentConversation.version = 'DM';
+                console.log('✅ Auto-detected DM when receiving message:', { id: currentConversation.id, peerId });
+                
+                // Reload conversations to update UI immediately
+                await loadConversations();
+              }
+            }
+          }
           
           const currentBlockedRooms = JSON.parse(localStorage.getItem('xmtp_blocked_rooms') || '[]');
           if (!currentIsDM && currentBlockedRooms.includes(currentConversation.id)) {
@@ -342,7 +478,7 @@ export const useConversations = () => {
             break;
           }
 
-          console.log('New message received!');
+          console.log('New message received!', currentIsDM ? '(DM)' : '(Room)');
           
         // Check if it's a special message type (call, room name change, etc.)
         let isSpecialMessage = false;
@@ -376,39 +512,10 @@ export const useConversations = () => {
           // Not a special message, continue
         }
         
-        // IMPORTANT: When receiving a message, check if this conversation is a DM
-        // This ensures the receiver also sees it as a DM (not a group)
-        // Sync the conversation first to get accurate member count
+        // Get conversation name for notification
         let conversationName = 'Unknown';
         
         try {
-          await currentConversation.sync();
-          const memberIds = currentConversation.memberInboxIds || [];
-          const syncedUserInboxId = xmtpClient?.inboxId;
-          
-          // Check if it's a DM (1 or 2 members = private chat)
-          currentIsDM = (memberIds.length === 1 && syncedUserInboxId && !memberIds.includes(syncedUserInboxId)) ||
-                       (memberIds.length === 2 && syncedUserInboxId && memberIds.includes(syncedUserInboxId));
-          
-          if (currentIsDM && !ConversationService.getInstance().isDM(currentConversation.id)) {
-            // Auto-detect and mark as DM on receiver's side
-            let peerId: string | null = null;
-            if (memberIds.length === 1) {
-              peerId = memberIds[0];
-            } else if (memberIds.length === 2) {
-              peerId = memberIds.find((id: string) => id !== syncedUserInboxId) || memberIds[0];
-            }
-            
-            if (peerId) {
-              ConversationService.getInstance().markAsDM(currentConversation.id, peerId);
-              // Also update the conversation object
-              currentConversation.peerInboxId = peerId;
-              currentConversation.version = 'DM';
-              console.log('✅ Auto-detected and marked as DM on receiver side:', { id: currentConversation.id, peerId });
-            }
-          }
-          
-          // Get conversation name for notification
           if (currentIsDM) {
             const peerInboxId = currentConversation.peerInboxId || ConversationService.getInstance().getDMPeerInboxId(currentConversation.id);
             const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
@@ -419,9 +526,9 @@ export const useConversations = () => {
             const roomNumber = ConversationService.getInstance().getRoomNumber(currentConversation.id);
             conversationName = customName || (roomNumber ? `Room ${roomNumber}` : 'Room');
           }
-        } catch (syncError) {
-          // If sync fails, continue anyway
-          console.log('Could not sync conversation for DM detection:', syncError);
+        } catch (nameError) {
+          // If name detection fails, continue anyway
+          console.log('Could not get conversation name:', nameError);
         }
         
         // Show notification for new message (skip special messages and own messages)
