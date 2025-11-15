@@ -336,32 +336,30 @@ const ChatPage: React.FC = () => {
 
   const getConversationDisplayName = (conv: any) => {
     if (!conv) return 'Unknown';
-    const customName = ConversationService.getInstance().getConversationName(conv.id);
-    if (customName) return customName;
     
-    // For DMs, try to show wallet address instead of inbox ID
+    // Check if it's a DM first (using our reliable detection)
     if (isDMConversation(conv)) {
-      // Get peer inbox ID
+      // For DMs, show "DM" as the title - it's a one-on-one private chat
+      // Optionally show wallet address if available for easier identification
       const peerInboxId = conv.peerInboxId || 
+        ConversationService.getInstance().getDMPeerInboxId(conv.id) ||
         (conv.memberInboxIds?.find((id: string) => id !== xmtpClient?.inboxId));
       
       if (peerInboxId) {
-        // Check if we have a stored wallet address for this inbox ID
         const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
         const walletAddress = storedAddresses[peerInboxId];
-        
         if (walletAddress) {
-          // Show formatted wallet address (e.g., "0x1234...5678")
+          // Show wallet address for easier identification (e.g., "0x1234...5678")
           return FormatUtils.getInstance().formatAddress(walletAddress);
         }
-        
-        // Fallback to formatted inbox ID
-        return FormatUtils.getInstance().formatInboxId(peerInboxId);
       }
-      
-      // If no peer inbox ID, show generic DM name
-      return 'Direct Message';
+      // Default to "DM" for direct messages - one-on-one private chat
+      return 'DM';
     }
+    
+    // For rooms, check custom name first
+    const customName = ConversationService.getInstance().getConversationName(conv.id);
+    if (customName) return customName;
     
     // For rooms, assign number if not already assigned
     const roomNumber = ConversationService.getInstance().getRoomNumber(conv.id);
@@ -382,32 +380,54 @@ const ChatPage: React.FC = () => {
   const isDMConversation = (conv: any): boolean => {
     if (!conv) return false;
     
-    // Check version property (most reliable)
-    if (conv.version === 'DM') return true;
+    // PRIMARY: Check localStorage - most reliable, persists across reloads
+    const isStoredDM = ConversationService.getInstance().isDM(conv.id);
+    if (isStoredDM) return true;
     
-    // Check if it has peerInboxId (indicates DM)
-    if (conv.peerInboxId) return true;
-    
-    // Check member count - DMs typically have 1 or 2 members total
-    const memberIds = conv.memberInboxIds || [];
-    const currentUserInboxId = xmtpClient?.inboxId;
-    
-    // If there are 0 or 1 members, it's likely a DM (especially if created as a group with just the peer)
-    if (memberIds.length <= 1) {
-      // If there's 1 member and it's not the current user, it's definitely a DM
-      if (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) return true;
-      // If there's 0 members, it might be a DM that hasn't synced yet
-      // But we'll be more conservative here - only treat as DM if version is set or peerInboxId exists
-    }
-    
-    // If there are exactly 2 members (you + 1 other = DM)
-    if (memberIds.length === 2) {
-      // If current user is in the list, there's 1 other person = DM
-      if (currentUserInboxId && memberIds.includes(currentUserInboxId)) return true;
-      // If current user is not in the list but there are 2 members, it might be a DM
+    // SECONDARY: Check version property
+    if (conv.version === 'DM') {
+      // Also store it for future reference
+      if (conv.peerInboxId) {
+        ConversationService.getInstance().markAsDM(conv.id, conv.peerInboxId);
+      }
       return true;
     }
     
+    // TERTIARY: Check if it has peerInboxId
+    if (conv.peerInboxId) {
+      // Store it for future reference
+      ConversationService.getInstance().markAsDM(conv.id, conv.peerInboxId);
+      return true;
+    }
+    
+    // FALLBACK: Check member count - DMs are private chats between exactly 2 people
+    const memberIds = conv.memberInboxIds || [];
+    const currentUserInboxId = xmtpClient?.inboxId;
+    
+    // DMs should have exactly 1 or 2 members total (you + the other person)
+    // If there's 1 member and it's not the current user, it's a DM
+    if (memberIds.length === 1 && currentUserInboxId && !memberIds.includes(currentUserInboxId)) {
+      const peerId = memberIds[0];
+      ConversationService.getInstance().markAsDM(conv.id, peerId);
+      return true;
+    }
+    
+    // If there are exactly 2 members (you + 1 other = DM)
+    if (memberIds.length === 2 && currentUserInboxId) {
+      let peerId: string | null = null;
+      if (memberIds.includes(currentUserInboxId)) {
+        peerId = memberIds.find((id: string) => id !== currentUserInboxId) || null;
+      } else {
+        peerId = memberIds[0];
+      }
+      
+      if (peerId) {
+        ConversationService.getInstance().markAsDM(conv.id, peerId);
+        return true;
+      }
+    }
+    
+    // Not a DM
     return false;
   };
 
@@ -940,15 +960,7 @@ const ChatPage: React.FC = () => {
                   </h2>
                   <p>
                     {isDMConversation(currentConversation) ? (
-                      (() => {
-                        const peerInboxId = currentConversation.peerInboxId || 
-                          (currentConversation.memberInboxIds?.find((id: string) => id !== xmtpClient?.inboxId));
-                        const storedAddresses = JSON.parse(localStorage.getItem('dm_wallet_addresses') || '{}');
-                        const walletAddress = peerInboxId ? storedAddresses[peerInboxId] : null;
-                        return walletAddress 
-                          ? `Wallet: ${FormatUtils.getInstance().formatAddress(walletAddress)}`
-                          : 'Direct message';
-                      })()
+                      'DM' // Always show "DM" for direct messages - one-on-one chat
                     ) : (
                       `${memberCount} members`
                     )}

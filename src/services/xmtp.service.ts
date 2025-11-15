@@ -158,8 +158,45 @@ export class XmtpService {
   async createDM(inboxId: string) {
     if (!this.client) throw new Error('XMTP client not initialized');
     try {
-      const dm = await this.client.conversations.getDmByInboxId(inboxId);
-      return dm || null; // Return null if not found instead of undefined
+      // First, try to get existing DM
+      const existingDm = await this.client.conversations.getDmByInboxId(inboxId);
+      if (existingDm) {
+        // Ensure it's marked as DM in multiple ways
+        if (!existingDm.peerInboxId) {
+          (existingDm as any).peerInboxId = inboxId;
+        }
+        if (!existingDm.version) {
+          (existingDm as any).version = 'DM';
+        }
+        
+        // Also store in localStorage for persistence
+        const { ConversationService } = await import('./conversation.service');
+        ConversationService.getInstance().markAsDM(existingDm.id, inboxId);
+        
+        return existingDm;
+      }
+      
+      // If DM doesn't exist, create a new one
+      // In XMTP V3 browser SDK, DMs are created as groups with a single member
+      // This is the standard way as shown in main.js line 1324
+      const group = await this.client.conversations.newGroup([inboxId]);
+      
+      // CRITICAL: Mark it as a DM immediately in multiple ways
+      // 1. Set properties on the object
+      (group as any).peerInboxId = inboxId;
+      (group as any).version = 'DM';
+      
+      // 2. Store in localStorage for persistence (separate from rooms)
+      const { ConversationService } = await import('./conversation.service');
+      ConversationService.getInstance().markAsDM(group.id, inboxId);
+      
+      console.log('DM created and marked as private chat:', { 
+        id: group.id,
+        peerInboxId: inboxId, 
+        version: 'DM',
+        stored: true
+      });
+      return group;
     } catch (error: any) {
       // If DM doesn't exist, return null (caller will create new one)
       const errorMsg = error?.message || String(error);

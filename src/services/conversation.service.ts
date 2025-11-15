@@ -92,5 +92,57 @@ export class ConversationService {
       return null;
     }
   }
+
+  // DM Tracking - separate from rooms
+  private readonly DM_TRACKING_KEY = 'xmtp_dm_conversations';
+
+  /**
+   * Mark a conversation as a DM (private chat)
+   */
+  markAsDM(conversationId: string, peerInboxId: string): void {
+    const dms = this.getDMs();
+    dms[conversationId] = {
+      peerInboxId,
+      createdAt: Date.now()
+    };
+    localStorage.setItem(this.DM_TRACKING_KEY, JSON.stringify(dms));
+  }
+
+  /**
+   * Check if a conversation is a DM
+   */
+  isDM(conversationId: string): boolean {
+    const dms = this.getDMs();
+    return conversationId in dms;
+  }
+
+  /**
+   * Get peer inbox ID for a DM
+   */
+  getDMPeerInboxId(conversationId: string): string | null {
+    const dms = this.getDMs();
+    return dms[conversationId]?.peerInboxId || null;
+  }
+
+  /**
+   * Get all DMs
+   */
+  getDMs(): Record<string, { peerInboxId: string; createdAt: number }> {
+    try {
+      const stored = localStorage.getItem(this.DM_TRACKING_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Remove DM tracking (if conversation is converted to group)
+   */
+  unmarkAsDM(conversationId: string): void {
+    const dms = this.getDMs();
+    delete dms[conversationId];
+    localStorage.setItem(this.DM_TRACKING_KEY, JSON.stringify(dms));
+  }
 }
 
