@@ -304,6 +304,30 @@ const GovChatPage: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
+  // Initialize walkie-talkie service when conversation changes
+  useEffect(() => {
+    if (!currentConversation || !useAppStore.getState().xmtpClient) return;
+
+    const initializeWT = async () => {
+      try {
+        const xmtpClient = useAppStore.getState().xmtpClient;
+        if (xmtpClient) {
+          await wtService.initialize(currentConversation, xmtpClient);
+          console.log('Walkie-talkie service initialized for conversation');
+        }
+      } catch (error) {
+        console.error('Error initializing walkie-talkie service:', error);
+      }
+    };
+
+    initializeWT();
+
+    // Cleanup on conversation change
+    return () => {
+      // Don't cleanup the service, just let it be re-initialized
+    };
+  }, [currentConversation]);
+
   // Stream messages and handle walkie-talkie messages
   useEffect(() => {
     if (!currentConversation || !useAppStore.getState().xmtpClient) return;
@@ -314,7 +338,7 @@ const GovChatPage: React.FC = () => {
         const stream = await currentConversation.stream();
         
         for await (const message of stream) {
-          console.log('New message received!');
+          console.log('New message received!', message);
           
           // Check if it's a walkie-talkie message
           try {
@@ -323,6 +347,17 @@ const GovChatPage: React.FC = () => {
               : message.content;
             
             if (data && typeof data === 'object' && data.type && data.type.startsWith('walkie_talkie_')) {
+              console.log('Handling walkie-talkie message:', data.type);
+              // Ensure service is initialized before handling
+              const xmtpClient = useAppStore.getState().xmtpClient;
+              if (xmtpClient && !wtService.isCurrentlyBroadcasting()) {
+                // Re-initialize if needed (conversation might have changed)
+                try {
+                  await wtService.initialize(currentConversation, xmtpClient);
+                } catch (e) {
+                  console.warn('Service already initialized or error:', e);
+                }
+              }
               // Handle walkie-talkie WebRTC signaling
               await wtService.handleMessage(message);
               // Don't add walkie-talkie signaling messages to chat
@@ -330,6 +365,7 @@ const GovChatPage: React.FC = () => {
             }
           } catch (e) {
             // Not a walkie-talkie message, continue
+            console.log('Not a walkie-talkie message:', e);
           }
           
           setMessages(prev => {
